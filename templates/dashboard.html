@@ -227,6 +227,17 @@
         <button id="shutdown-hub-button" class="shutdown-btn">Shutdown Hub</button>
         <button id="reset-hub-button" class="shutdown-btn" style="background-color: #e67e22;">Reset Hub</button>
         <button id="theme-switcher-button">Toggle Theme</button>
+        <div id="notification-bell" style="display: inline-block; position: relative; margin-left: 12px; cursor: pointer; vertical-align: middle;" onclick="toggleNotificationPanel()">
+            <span style="font-size: 1.4em;">&#128276;</span>
+            <span id="notif-badge" style="display:none; position: absolute; top: -4px; right: -6px; background: #e74c3c; color: white; border-radius: 50%; font-size: 0.65em; padding: 2px 6px; font-weight: bold;">0</span>
+        </div>
+        <div id="notification-panel" style="display: none; position: absolute; top: 60px; right: 20px; width: 380px; max-height: 400px; overflow-y: auto; background: var(--section-bg); border: 1px solid var(--section-border); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.3); z-index: 100; padding: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <strong>Notifications</strong>
+                <button type="button" onclick="markNotificationsRead()" style="font-size: 0.8em; padding: 4px 10px; cursor: pointer;">Mark all read</button>
+            </div>
+            <div id="notif-list"><p style="color: #888;">No notifications yet.</p></div>
+        </div>
 
         <div class="tab-nav">
             <button class="tab-link active" onclick="openTab(event, 'dashboard-tab')">Dashboard</button>
@@ -234,11 +245,19 @@
             <button class="tab-link" onclick="openTab(event, 'settings-tab')">Admin Settings</button>
             <button class="tab-link" onclick="openTab(event, 'plugins-tab')">Plugin Management</button>
             <button class="tab-link" onclick="openTab(event, 'scheduler-tab')">Scheduled Tasks</button>
+            <button class="tab-link" onclick="openTab(event, 'webhooks-tab')">Webhooks</button>
         </div>
 
         <div id="dashboard-tab" class="tab-content" style="display: block;">
             <div class="section">
                 <h2>Add New Agent</h2>
+                <div style="margin-bottom: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <label for="template-select" style="margin: 0;">Load Template:</label>
+                    <select id="template-select" onchange="loadTemplate()" style="padding: 6px; min-width: 200px;">
+                        <option value="">-- None --</option>
+                    </select>
+                    <button type="button" onclick="deleteSelectedTemplate()" style="padding: 4px 12px; cursor: pointer; font-size: 0.85em;">Delete Template</button>
+                </div>
                 <form id="add-agent-form" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                     <div><label for="agent-name">Agent Name:</label><input type="text" id="agent-name" name="agent_name" required></div>
                     <div><label for="connector-type">Connector Type:</label><select id="connector-type" name="connector_type"><option value="none">None</option><option value="discord">Discord</option><option value="telegram">Telegram</option><option value="line">LINE</option><option value="whatsapp">WhatsApp</option><option value="x">X (Twitter)</option><option value="voice">Voice</option></select></div>
@@ -295,12 +314,22 @@
                         <input type="text" id="agent-llm-model" name="llm_model" placeholder="e.g., meta-llama/Llama-3-8B" style="width: 100%;">
                     </div>
                     <div style="grid-column: 1 / span 2;"><label for="initial-goal">Initial Goal/Task (Optional):</label><textarea id="initial-goal" name="initial_goal" rows="3"></textarea></div>
-                    <button type="submit" style="grid-column: 1 / span 2;">Launch New Agent</button>
+                    <div style="grid-column: 1 / span 2; display: flex; gap: 10px;">
+                        <button type="submit" style="flex: 1;">Launch New Agent</button>
+                        <button type="button" onclick="saveAsTemplate()" style="flex: 0; white-space: nowrap; padding: 8px 16px; cursor: pointer;">Save as Template</button>
+                    </div>
                 </form>
             </div>
             <div class="section">
                 <h2>Active Agents</h2>
                 <ul id="active-agents-list"></ul>
+                <div style="margin-top: 15px; padding: 15px; border: 1px solid var(--section-border); border-radius: 8px;">
+                    <strong>Broadcast to All Agents</strong>
+                    <form id="broadcast-form" style="display: flex; gap: 8px; margin-top: 8px;">
+                        <input type="text" id="broadcast-message" placeholder="Send a message to all agents..." style="flex: 1; padding: 6px;" required>
+                        <button type="submit" style="padding: 6px 16px; cursor: pointer;">Broadcast</button>
+                    </form>
+                </div>
             </div>
             <div class="section">
                 <h2>Recent Experiences</h2>
@@ -596,6 +625,32 @@
             </div>
         </div>
 
+        <div id="webhooks-tab" class="tab-content">
+            <div class="section">
+                <h2>Webhook Triggers</h2>
+                <p style="color: #aaa;">Create webhook URLs that external services (GitHub, Zapier, curl) can POST to, triggering a task for a specific agent.</p>
+
+                <form id="create-webhook-form" style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 15px; margin-top: 15px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e; align-items: end;">
+                    <div>
+                        <label for="webhook-name">Webhook Name:</label>
+                        <input type="text" id="webhook-name" placeholder="e.g., GitHub Push" style="width: 100%; padding: 6px;" required>
+                    </div>
+                    <div>
+                        <label for="webhook-agent">Target Agent:</label>
+                        <select id="webhook-agent" style="width: 100%; padding: 6px;">
+                            <option value="">-- Select an agent --</option>
+                        </select>
+                    </div>
+                    <div>
+                        <button type="submit" style="padding: 8px 20px; cursor: pointer;">Create Webhook</button>
+                    </div>
+                </form>
+
+                <h3 style="margin-top: 25px;">Active Webhooks</h3>
+                <div id="webhooks-list"><p style="color: #888;">Loading...</p></div>
+            </div>
+        </div>
+
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js"></script>
@@ -751,6 +806,270 @@
             } catch (error) {
                 console.error('Error fetching HuggingFace models:', error);
                 select.innerHTML = '<option value="">-- Failed to load models --</option>';
+            }
+        }
+
+        // --- Notification Functions ---
+        let _notifPanelOpen = false;
+
+        async function fetchNotifications() {
+            try {
+                const response = await fetch('/api/notifications');
+                const data = await response.json();
+                const notifications = data.notifications || [];
+                const badge = document.getElementById('notif-badge');
+                const unread = notifications.filter(n => !n.read).length;
+                if (unread > 0) {
+                    badge.textContent = unread;
+                    badge.style.display = 'inline';
+                } else {
+                    badge.style.display = 'none';
+                }
+                if (_notifPanelOpen) renderNotificationList(notifications);
+            } catch (e) {
+                console.error('Error fetching notifications:', e);
+            }
+        }
+
+        function toggleNotificationPanel() {
+            const panel = document.getElementById('notification-panel');
+            _notifPanelOpen = !_notifPanelOpen;
+            panel.style.display = _notifPanelOpen ? 'block' : 'none';
+            if (_notifPanelOpen) fetchNotifications();
+        }
+
+        function renderNotificationList(notifications) {
+            const list = document.getElementById('notif-list');
+            if (notifications.length === 0) {
+                list.innerHTML = '<p style="color: #888;">No notifications yet.</p>';
+                return;
+            }
+            const typeIcons = {
+                agent_launched: '🚀', agent_shutdown: '⏹', task_error: '❌',
+                webhook_triggered: '🔗', scheduled_task_fired: '⏰',
+                approval_needed: '⚠️', broadcast: '📢'
+            };
+            list.innerHTML = notifications.map(n => {
+                const icon = typeIcons[n.type] || '📌';
+                const time = moment(n.timestamp * 1000).fromNow();
+                const bg = n.read ? 'transparent' : 'rgba(46, 137, 255, 0.08)';
+                return `<div style="padding: 6px 8px; border-bottom: 1px solid var(--section-border); background: ${bg}; font-size: 0.9em;">
+                    ${icon} ${n.message} <span style="color: #888; font-size: 0.8em; float: right;">${time}</span>
+                </div>`;
+            }).join('');
+        }
+
+        async function markNotificationsRead() {
+            try {
+                await fetch('/api/notifications/read', { method: 'POST' });
+                document.getElementById('notif-badge').style.display = 'none';
+                fetchNotifications();
+            } catch (e) {
+                console.error('Error marking notifications read:', e);
+            }
+        }
+
+        // --- Webhook Functions ---
+        function populateWebhookAgentDropdown() {
+            const select = document.getElementById('webhook-agent');
+            const agents = hub_memory_cache.active_agents || {};
+            const current = select.value;
+            select.innerHTML = '<option value="">-- Select an agent --</option>';
+            for (const name in agents) {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                select.appendChild(opt);
+            }
+            if (current) select.value = current;
+        }
+
+        async function fetchAndDisplayWebhooks() {
+            try {
+                const response = await fetch('/api/webhooks');
+                const data = await response.json();
+                const webhooks = data.webhooks || [];
+                const container = document.getElementById('webhooks-list');
+
+                if (webhooks.length === 0) {
+                    container.innerHTML = '<p style="color: #888;">No webhooks created yet.</p>';
+                    return;
+                }
+
+                const baseUrl = window.location.origin;
+                let html = '<table><thead><tr><th>Name</th><th>Agent</th><th>Webhook URL</th><th>Triggers</th><th>Last Triggered</th><th>Enabled</th><th>Actions</th></tr></thead><tbody>';
+                for (const wh of webhooks) {
+                    const url = `${baseUrl}/webhook/${wh.id}?secret=${wh.secret}`;
+                    const lastTriggered = wh.last_triggered ? moment(wh.last_triggered * 1000).fromNow() : 'Never';
+                    const enabledLabel = wh.enabled ? 'Yes' : 'No';
+                    html += `<tr>
+                        <td>${wh.name}</td>
+                        <td>${wh.agent_name}</td>
+                        <td style="max-width: 280px; word-break: break-all; font-size: 0.85em;">
+                            <code>${url}</code>
+                            <button type="button" onclick="copyToClipboard('${url}')" style="margin-left: 4px; padding: 2px 8px; cursor: pointer; font-size: 0.85em;" title="Copy URL">Copy</button>
+                        </td>
+                        <td>${wh.trigger_count}</td>
+                        <td>${lastTriggered}</td>
+                        <td><button type="button" onclick="toggleWebhook('${wh.id}')" style="padding: 2px 10px; cursor: pointer;">${enabledLabel}</button></td>
+                        <td><button type="button" onclick="deleteWebhook('${wh.id}')" style="padding: 2px 10px; cursor: pointer; color: #e74c3c;">Delete</button></td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } catch (e) {
+                console.error('Error fetching webhooks:', e);
+            }
+        }
+
+        async function handleCreateWebhook(event) {
+            event.preventDefault();
+            const name = document.getElementById('webhook-name').value.trim();
+            const agent_name = document.getElementById('webhook-agent').value;
+            if (!name || !agent_name) { alert('Name and agent are required.'); return; }
+            try {
+                const response = await fetch('/api/webhooks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, agent_name })
+                });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    document.getElementById('webhook-name').value = '';
+                    fetchAndDisplayWebhooks();
+                    alert('Webhook created! Copy the URL from the table.');
+                } else {
+                    alert(result.message);
+                }
+            } catch (e) {
+                console.error('Error creating webhook:', e);
+            }
+        }
+
+        async function deleteWebhook(id) {
+            if (!confirm('Delete this webhook?')) return;
+            try {
+                await fetch(`/api/webhooks/${id}`, { method: 'DELETE' });
+                fetchAndDisplayWebhooks();
+            } catch (e) {
+                console.error('Error deleting webhook:', e);
+            }
+        }
+
+        async function toggleWebhook(id) {
+            try {
+                await fetch(`/api/webhooks/${id}/toggle`, { method: 'POST' });
+                fetchAndDisplayWebhooks();
+            } catch (e) {
+                console.error('Error toggling webhook:', e);
+            }
+        }
+
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Copied to clipboard!');
+            }).catch(() => {
+                prompt('Copy this URL:', text);
+            });
+        }
+
+        // --- Broadcast Function ---
+        async function handleBroadcast(event) {
+            event.preventDefault();
+            const msgInput = document.getElementById('broadcast-message');
+            const message = msgInput.value.trim();
+            if (!message) return;
+            try {
+                const response = await fetch('/api/broadcast', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sender: 'user', message })
+                });
+                const result = await response.json();
+                alert(result.message);
+                msgInput.value = '';
+            } catch (e) {
+                console.error('Error broadcasting:', e);
+            }
+        }
+
+        // --- Agent Template Functions ---
+        let _templates = [];
+
+        async function fetchAgentTemplates() {
+            try {
+                const response = await fetch('/api/agent_templates');
+                const data = await response.json();
+                _templates = data.templates || [];
+                const select = document.getElementById('template-select');
+                const current = select.value;
+                select.innerHTML = '<option value="">-- None --</option>';
+                _templates.forEach(t => {
+                    const opt = document.createElement('option');
+                    opt.value = t.id;
+                    opt.textContent = t.template_name;
+                    select.appendChild(opt);
+                });
+                if (current) select.value = current;
+            } catch (e) {
+                console.error('Error fetching templates:', e);
+            }
+        }
+
+        function loadTemplate() {
+            const id = document.getElementById('template-select').value;
+            if (!id) return;
+            const t = _templates.find(tmpl => tmpl.id === id);
+            if (!t) return;
+            document.getElementById('agent-name').value = t.agent_name || '';
+            document.getElementById('connector-type').value = t.connector_type || 'none';
+            document.getElementById('proactive-loops').checked = !!t.is_proactive;
+            document.getElementById('execution-mode').value = t.execution_mode || 'safe';
+            document.getElementById('batch-experience').checked = !!t.batch_experience;
+            document.getElementById('proactive-interval').value = t.proactive_interval || 600;
+            document.getElementById('agent-llm-provider').value = t.llm_provider || '';
+            toggleAgentLlmFields();
+            document.getElementById('agent-llm-model').value = t.llm_model || '';
+            document.getElementById('initial-goal').value = t.initial_goal || '';
+        }
+
+        async function saveAsTemplate() {
+            const templateName = prompt('Enter a name for this template:');
+            if (!templateName) return;
+            const form = document.getElementById('add-agent-form');
+            const formData = new FormData(form);
+            const data = Object.fromEntries(formData.entries());
+            data.template_name = templateName;
+            data.is_proactive = data.is_proactive === 'true';
+            data.batch_experience = data.batch_experience === 'true';
+            data.proactive_interval = parseInt(data.proactive_interval) || 600;
+            try {
+                const response = await fetch('/api/agent_templates', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    alert('Template saved!');
+                    fetchAgentTemplates();
+                } else {
+                    alert(result.message);
+                }
+            } catch (e) {
+                console.error('Error saving template:', e);
+            }
+        }
+
+        async function deleteSelectedTemplate() {
+            const id = document.getElementById('template-select').value;
+            if (!id) { alert('Select a template to delete.'); return; }
+            if (!confirm('Delete this template?')) return;
+            try {
+                await fetch(`/api/agent_templates/${id}`, { method: 'DELETE' });
+                fetchAgentTemplates();
+            } catch (e) {
+                console.error('Error deleting template:', e);
             }
         }
 
@@ -1223,6 +1542,7 @@
                 const agents = await response.json();
                 hub_memory_cache.active_agents = agents;
                 populateSchedulerAgentDropdown();
+                populateWebhookAgentDropdown();
                 const agentList = document.getElementById('active-agents-list');
                 agentList.innerHTML = '';
 
@@ -1601,6 +1921,9 @@
             fetchAutoInstallDepsStatus();
             checkVersionBadge();
             fetchAndDisplayScheduledTasks();
+            fetchNotifications();
+            fetchAndDisplayWebhooks();
+            fetchAgentTemplates();
 
             // Polling for dynamic data
             setInterval(fetchAndDisplayAgents, 10000);
@@ -1611,6 +1934,8 @@
             setInterval(fetchAndDisplayPlugins, 10000);
             setInterval(fetchAutoInstallDepsStatus, 5000);
             setInterval(fetchAndDisplayScheduledTasks, 10000);
+            setInterval(fetchNotifications, 5000);
+            setInterval(fetchAndDisplayWebhooks, 10000);
 
             // Attach form submission handlers and other buttons
             document.getElementById('shutdown-hub-button').addEventListener('click', handleShutdownHub);
@@ -1619,6 +1944,8 @@
             document.getElementById('add-agent-form').addEventListener('submit', handleAddAgentFormSubmit);
             document.getElementById('plugin-upload-form').addEventListener('submit', handlePluginUploadFormSubmit);
             document.getElementById('add-scheduled-task-form').addEventListener('submit', handleAddScheduledTask);
+            document.getElementById('create-webhook-form').addEventListener('submit', handleCreateWebhook);
+            document.getElementById('broadcast-form').addEventListener('submit', handleBroadcast);
 
             // Open the default tab
             document.getElementsByClassName("tab-link")[0].click();

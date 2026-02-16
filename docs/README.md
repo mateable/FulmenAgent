@@ -4,6 +4,12 @@ Setup guides and reference docs for all plugins and integrations.
 
 ---
 
+## Dashboard Features
+
+| Guide | What It Covers |
+|-------|---------------|
+| [Features Guide](features-guide.md) | Agent Templates, Webhooks, Notifications, Broadcast, Scheduled Tasks |
+
 ## Plugin Guides
 
 | Guide | What It Covers |

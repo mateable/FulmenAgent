@@ -10,6 +10,7 @@ import signal # ADD signal for process termination
 import sys # For sys.executable in subprocess calls
 import atexit # For cleanup on hub exit
 import uuid # NEW: For unique approval request IDs
+import secrets # For webhook secret tokens
 import time # Ensure time is imported
 from dotenv import load_dotenv, set_key # Import load_dotenv and set_key
 import zipfile # NEW: For handling zip file uploads
@@ -54,7 +55,10 @@ hub_memory = {
     "global_plugin_preferences": {}, # NEW: To store global enable/disable status for plugins
     "global_auto_install_deps": True, # NEW: Global setting for auto-installing plugin dependencies
     "discovered_plugins": {}, # NEW: To store details of all plugins found in the plugins directory
-    "scheduled_tasks": [] # Scheduled/cron tasks (persisted to scheduled_tasks.json)
+    "scheduled_tasks": [], # Scheduled/cron tasks (persisted to scheduled_tasks.json)
+    "webhooks": {},  # {"<id>": {"id", "name", "agent_name", "secret", "created_at", "enabled", "last_triggered", "trigger_count"}}
+    "notifications": [],  # [{"id", "type", "message", "timestamp", "read"}] — capped at 50
+    "agent_templates": []  # Persisted to agent_templates.json
 }
 
 launched_agent_processes = {}
@@ -141,6 +145,7 @@ def _execute_scheduled_task(task_id, agent_name, task_message):
         "sender": "scheduler",
         "message": task_message
     })
+    _add_notification("scheduled_task_fired", f"Scheduled task fired for '{agent_name}': {task_message[:60]}")
     # Update last_run
     for t in hub_memory["scheduled_tasks"]:
         if t["id"] == task_id:
@@ -195,6 +200,66 @@ def _load_scheduled_tasks():
             logger.error(f"[Scheduler] Error loading tasks: {e}")
 
 _load_scheduled_tasks()
+
+# ─── Notification System ───
+
+MAX_NOTIFICATIONS = 50
+
+def _add_notification(ntype, message):
+    """Add a notification to the in-memory feed (capped at MAX_NOTIFICATIONS)."""
+    hub_memory["notifications"].insert(0, {
+        "id": str(uuid.uuid4())[:8],
+        "type": ntype,
+        "message": message,
+        "timestamp": time.time(),
+        "read": False
+    })
+    if len(hub_memory["notifications"]) > MAX_NOTIFICATIONS:
+        hub_memory["notifications"] = hub_memory["notifications"][:MAX_NOTIFICATIONS]
+
+# ─── Webhook System ───
+
+WEBHOOKS_FILE = os.path.join(os.path.dirname(__file__), "webhooks.json")
+
+def _save_webhooks():
+    try:
+        with open(WEBHOOKS_FILE, "w") as f:
+            json.dump(hub_memory["webhooks"], f, indent=2)
+    except Exception as e:
+        logger.error(f"[Webhooks] Error saving: {e}")
+
+def _load_webhooks():
+    if os.path.exists(WEBHOOKS_FILE):
+        try:
+            with open(WEBHOOKS_FILE, "r") as f:
+                hub_memory["webhooks"] = json.load(f)
+            logger.info(f"[Webhooks] Loaded {len(hub_memory['webhooks'])} webhook(s) from disk.")
+        except Exception as e:
+            logger.error(f"[Webhooks] Error loading: {e}")
+
+_load_webhooks()
+
+# ─── Agent Templates System ───
+
+AGENT_TEMPLATES_FILE = os.path.join(os.path.dirname(__file__), "agent_templates.json")
+
+def _save_agent_templates():
+    try:
+        with open(AGENT_TEMPLATES_FILE, "w") as f:
+            json.dump(hub_memory["agent_templates"], f, indent=2)
+    except Exception as e:
+        logger.error(f"[Templates] Error saving: {e}")
+
+def _load_agent_templates():
+    if os.path.exists(AGENT_TEMPLATES_FILE):
+        try:
+            with open(AGENT_TEMPLATES_FILE, "r") as f:
+                hub_memory["agent_templates"] = json.load(f)
+            logger.info(f"[Templates] Loaded {len(hub_memory['agent_templates'])} template(s) from disk.")
+        except Exception as e:
+            logger.error(f"[Templates] Error loading: {e}")
+
+_load_agent_templates()
 
 # -------------------- Routes --------------------
 
@@ -306,6 +371,12 @@ def submit_experience():
                         _add_tokens(provider, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
                         logger.debug(f"Aggregated token usage for {provider} (agent={agent_name})")
 
+        # Notify on errors
+        step_result = exp.get("step_result", {})
+        if step_result.get("status") == "failed":
+            exp_agent = exp.get("agent_name", "unknown")
+            _add_notification("task_error", f"Agent '{exp_agent}' encountered an error")
+
     logger.debug(f"Received {len(experiences)} experiences.")
     return jsonify({"status": "success", "message": "Experiences submitted."}), 200
 
@@ -342,7 +413,7 @@ def shutdown_agent(agent_name):
         else:
             status_message += " Process termination failed or was not applicable."
 
-
+        _add_notification("agent_shutdown", f"Agent '{agent_name}' shut down")
         return jsonify({"status": "success", "message": status_message}), 200
     return jsonify({"status": "error", "message": f"Agent {agent_name} not found."}), 404
 
@@ -525,6 +596,7 @@ def request_approval():
         "timestamp": time.time()
     }
     logger.info(f"Approval request '{request_id}' from agent '{agent_name}' for tool '{tool_name}' logged.")
+    _add_notification("approval_needed", f"Agent '{agent_name}' needs approval for '{tool_name}'")
     return jsonify({"status": "success", "request_id": request_id}), 200
 
 @app.route("/api/approvals", methods=["GET"])
@@ -881,7 +953,8 @@ def reset_hub():
         "huggingface": {"prompt_tokens": 0, "completion_tokens": 0}
     }
     hub_memory["per_agent_token_usage"] = {}
-    # Keep global_plugin_preferences, global_auto_install_deps, discovered_plugins, scheduled_tasks
+    hub_memory["notifications"] = []
+    # Keep global_plugin_preferences, global_auto_install_deps, discovered_plugins, scheduled_tasks, webhooks, agent_templates
 
     logger.info(f"Hub reset complete. Killed {killed} agents, cleared all memory.")
     return jsonify({"status": "success", "message": f"Hub reset. Killed {killed} agent(s), cleared all data."}), 200
@@ -978,6 +1051,186 @@ def api_toggle_scheduled_task(task_id):
             _save_scheduled_tasks()
             return jsonify({"status": "success", "enabled": t["enabled"]}), 200
     return jsonify({"status": "error", "message": "Task not found."}), 404
+
+
+# ─── Webhook API ───
+
+@app.route("/api/webhooks", methods=["GET"])
+def api_get_webhooks():
+    """List all webhooks."""
+    return jsonify({"status": "success", "webhooks": list(hub_memory["webhooks"].values())}), 200
+
+@app.route("/api/webhooks", methods=["POST"])
+def api_create_webhook():
+    """Create a new webhook."""
+    data = request.json
+    name = data.get("name", "").strip()
+    agent_name = data.get("agent_name", "").strip()
+
+    if not name or not agent_name:
+        return jsonify({"status": "error", "message": "name and agent_name are required."}), 400
+
+    webhook_id = str(uuid.uuid4())[:8]
+    secret = secrets.token_urlsafe(16)
+
+    webhook = {
+        "id": webhook_id,
+        "name": name,
+        "agent_name": agent_name,
+        "secret": secret,
+        "created_at": time.time(),
+        "enabled": True,
+        "last_triggered": None,
+        "trigger_count": 0
+    }
+    hub_memory["webhooks"][webhook_id] = webhook
+    _save_webhooks()
+
+    logger.info(f"[Webhooks] Created webhook '{name}' (id={webhook_id}) for agent '{agent_name}'")
+    return jsonify({"status": "success", "webhook": webhook}), 200
+
+@app.route("/api/webhooks/<webhook_id>", methods=["DELETE"])
+def api_delete_webhook(webhook_id):
+    """Delete a webhook."""
+    if webhook_id in hub_memory["webhooks"]:
+        del hub_memory["webhooks"][webhook_id]
+        _save_webhooks()
+        return jsonify({"status": "success"}), 200
+    return jsonify({"status": "error", "message": "Webhook not found."}), 404
+
+@app.route("/api/webhooks/<webhook_id>/toggle", methods=["POST"])
+def api_toggle_webhook(webhook_id):
+    """Enable or disable a webhook."""
+    if webhook_id in hub_memory["webhooks"]:
+        hub_memory["webhooks"][webhook_id]["enabled"] = not hub_memory["webhooks"][webhook_id]["enabled"]
+        _save_webhooks()
+        return jsonify({"status": "success", "enabled": hub_memory["webhooks"][webhook_id]["enabled"]}), 200
+    return jsonify({"status": "error", "message": "Webhook not found."}), 404
+
+@app.route("/webhook/<webhook_id>", methods=["POST"])
+def webhook_trigger(webhook_id):
+    """External trigger endpoint — fires a message into an agent's queue."""
+    if webhook_id not in hub_memory["webhooks"]:
+        return jsonify({"status": "error", "message": "Webhook not found."}), 404
+
+    wh = hub_memory["webhooks"][webhook_id]
+
+    if not wh["enabled"]:
+        return jsonify({"status": "error", "message": "Webhook is disabled."}), 403
+
+    # Validate secret (query param or header)
+    provided_secret = request.args.get("secret") or request.headers.get("X-Webhook-Secret", "")
+    if provided_secret != wh["secret"]:
+        return jsonify({"status": "error", "message": "Invalid secret."}), 401
+
+    # Extract message from body
+    body = request.get_json(silent=True) or {}
+    message = body.get("message", "")
+    if not message:
+        # If no message field, use the entire payload as context
+        message = f"Webhook '{wh['name']}' triggered with payload: {json.dumps(body)}"
+
+    agent_name = wh["agent_name"]
+    if agent_name not in hub_memory["agent_message_queues"]:
+        hub_memory["agent_message_queues"][agent_name] = []
+    hub_memory["agent_message_queues"][agent_name].append({
+        "sender": "webhook",
+        "message": message
+    })
+
+    wh["last_triggered"] = time.time()
+    wh["trigger_count"] += 1
+    _save_webhooks()
+
+    _add_notification("webhook_triggered", f"Webhook '{wh['name']}' triggered for agent '{agent_name}'")
+    logger.info(f"[Webhooks] Webhook '{wh['name']}' (id={webhook_id}) triggered for agent '{agent_name}'")
+    return jsonify({"status": "success", "message": f"Message sent to agent '{agent_name}'."}), 200
+
+
+# ─── Notification API ───
+
+@app.route("/api/notifications", methods=["GET"])
+def api_get_notifications():
+    """Return the notification feed (most recent first)."""
+    return jsonify({"status": "success", "notifications": hub_memory["notifications"]}), 200
+
+@app.route("/api/notifications/read", methods=["POST"])
+def api_mark_notifications_read():
+    """Mark all notifications as read."""
+    for n in hub_memory["notifications"]:
+        n["read"] = True
+    return jsonify({"status": "success"}), 200
+
+
+# ─── Broadcast API ───
+
+@app.route("/api/broadcast", methods=["POST"])
+def api_broadcast():
+    """Send a message to ALL active agents."""
+    data = request.json
+    message = data.get("message", "").strip()
+    sender = data.get("sender", "broadcast")
+
+    if not message:
+        return jsonify({"status": "error", "message": "Message is required."}), 400
+
+    count = 0
+    for agent_name in hub_memory["active_agents"]:
+        if agent_name not in hub_memory["agent_message_queues"]:
+            hub_memory["agent_message_queues"][agent_name] = []
+        hub_memory["agent_message_queues"][agent_name].append({
+            "sender": sender,
+            "message": message
+        })
+        count += 1
+
+    logger.info(f"[Broadcast] Sent message to {count} agent(s): {message[:80]}")
+    _add_notification("broadcast", f"Broadcast sent to {count} agent(s): {message[:60]}")
+    return jsonify({"status": "success", "message": f"Broadcast sent to {count} agent(s)."}), 200
+
+
+# ─── Agent Templates API ───
+
+@app.route("/api/agent_templates", methods=["GET"])
+def api_get_agent_templates():
+    """List all saved agent templates."""
+    return jsonify({"status": "success", "templates": hub_memory["agent_templates"]}), 200
+
+@app.route("/api/agent_templates", methods=["POST"])
+def api_create_agent_template():
+    """Save an agent launch configuration as a reusable template."""
+    data = request.json
+    template_name = data.get("template_name", "").strip()
+
+    if not template_name:
+        return jsonify({"status": "error", "message": "template_name is required."}), 400
+
+    template = {
+        "id": str(uuid.uuid4())[:8],
+        "template_name": template_name,
+        "agent_name": data.get("agent_name", ""),
+        "connector_type": data.get("connector_type", "none"),
+        "is_proactive": data.get("is_proactive", False),
+        "execution_mode": data.get("execution_mode", "safe"),
+        "batch_experience": data.get("batch_experience", False),
+        "proactive_interval": data.get("proactive_interval", 600),
+        "llm_provider": data.get("llm_provider", ""),
+        "llm_model": data.get("llm_model", ""),
+        "initial_goal": data.get("initial_goal", ""),
+        "created_at": time.time()
+    }
+    hub_memory["agent_templates"].append(template)
+    _save_agent_templates()
+
+    logger.info(f"[Templates] Saved template '{template_name}' (id={template['id']})")
+    return jsonify({"status": "success", "template": template}), 200
+
+@app.route("/api/agent_templates/<template_id>", methods=["DELETE"])
+def api_delete_agent_template(template_id):
+    """Delete an agent template."""
+    hub_memory["agent_templates"] = [t for t in hub_memory["agent_templates"] if t["id"] != template_id]
+    _save_agent_templates()
+    return jsonify({"status": "success"}), 200
 
 
 # ─── Software Update System ───
@@ -1193,6 +1446,7 @@ def launch_agent():
                 launched_agent_processes[agent_name] = process.pid # Store the PID
         
         logger.info(f"Launched agent '{agent_name}' with command: {' '.join(cmd)}")
+        _add_notification("agent_launched", f"Agent '{agent_name}' launched")
         return jsonify({"status": "success", "message": f"Agent '{agent_name}' launched successfully!"}), 200
     except Exception as e:
         logger.error(f"Error launching agent '{agent_name}': {e}")
