@@ -1097,7 +1097,8 @@
                 // Populate scheduler timezone dropdown
                 try {
                     const tzResp = await fetch('/api/timezones');
-                    const timezones = await tzResp.json();
+                    const tzData = await tzResp.json();
+                    const timezones = tzData.timezones || [];
                     const tzSelect = document.getElementById('scheduler-timezone');
                     const currentTz = config.SCHEDULER_TIMEZONE || 'UTC';
                     tzSelect.innerHTML = '';
