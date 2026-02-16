@@ -1543,6 +1543,15 @@
                 hub_memory_cache.active_agents = agents;
                 populateSchedulerAgentDropdown();
                 populateWebhookAgentDropdown();
+
+                // Fetch health data alongside
+                let healthData = {};
+                try {
+                    const hResp = await fetch('/api/agent_health');
+                    const hData = await hResp.json();
+                    healthData = hData.health || {};
+                } catch (e) {}
+
                 const agentList = document.getElementById('active-agents-list');
                 agentList.innerHTML = '';
 
@@ -1550,47 +1559,57 @@
                     agentList.innerHTML = '<li>No agents currently registered.</li>';
                 } else {
                     for (const [name, details] of Object.entries(agents)) {
-                        const lastHeartbeatTime = moment(details.last_heartbeat * 1000); // Convert Unix timestamp to moment object
+                        const lastHeartbeatTime = moment(details.last_heartbeat * 1000);
                         const now = moment();
-                        const heartbeatInterval = parseInt(document.getElementById('default-proactive-interval').value) || 600; // Get from config or default
-                        const inactiveThreshold = heartbeatInterval * 2; // e.g., 2x the interval
+                        const heartbeatInterval = parseInt(document.getElementById('default-proactive-interval').value) || 600;
+                        const inactiveThreshold = heartbeatInterval * 2;
                         const diffSeconds = now.diff(lastHeartbeatTime, 'seconds');
-                        
-                        let statusColorClass = 'inactive-old'; // Default to red
+
+                        let statusColorClass = 'inactive-old';
                         let statusText = 'Inactive';
 
-                        if (diffSeconds <= heartbeatInterval + 10) { // +10s buffer
+                        if (diffSeconds <= heartbeatInterval + 10) {
                             statusColorClass = 'active';
                             statusText = 'Active';
                         } else if (diffSeconds < inactiveThreshold) {
                             statusColorClass = 'inactive-recent';
                             statusText = 'Inactive (recent)';
                         }
-                        
+
+                        // Health stats
+                        const h = healthData[name] || {};
+                        const uptimeStr = h.uptime_seconds ? formatUptime(h.uptime_seconds) : '—';
+                        const tasksStr = h.tasks_completed != null ? h.tasks_completed : '—';
+                        const errorsStr = h.errors != null ? h.errors : '—';
+                        const tokensStr = h.total_tokens != null ? h.total_tokens.toLocaleString() : '—';
+
                         const li = document.createElement('li');
                         li.innerHTML = `
                             <div class="agent-status">
                                 <div>
                                     <span><strong>${name}</strong> <span class="agent-status-indicator ${statusColorClass}"></span></span><br>
                                     <span>URL: ${details.url}</span><br>
-                                    <span>Last Heartbeat: ${lastHeartbeatTime.format('YYYY-MM-DD HH:mm:ss')}</span> 
+                                    <span>Last Heartbeat: ${lastHeartbeatTime.format('YYYY-MM-DD HH:mm:ss')}</span><br>
+                                    <span style="font-size: 0.85em; color: var(--secondary-color);">Uptime: ${uptimeStr} | Tasks: ${tasksStr} | Errors: <span style="color:${h.errors > 0 ? '#e74c3c' : 'inherit'}">${errorsStr}</span> | Tokens: ${tokensStr}</span>
                                 </div>
-                                <div>
-                                    <button class="shutdown-agent-button" data-agent-name="${name}">Shutdown Agent</button>
+                                <div style="display: flex; flex-direction: column; gap: 4px;">
+                                    <button class="shutdown-agent-button" data-agent-name="${name}">Shutdown</button>
+                                    <button type="button" data-agent="${name}" class="view-memories-btn" style="padding: 4px 10px; cursor: pointer; font-size: 0.85em;">Memories</button>
+                                    <button type="button" data-agent="${name}" class="view-logs-btn" style="padding: 4px 10px; cursor: pointer; font-size: 0.85em;">Logs</button>
                                 </div>
                             </div>
                             <form class="send-message-form" data-agent-name="${name}" style="margin-top: 10px;">
                                 <input type="text" name="message" placeholder="Message to ${name}" style="width: 70%;">
                                 <button type="submit">Send</button>
                             </form>
+                            <div id="agent-panel-${name.replace(/[^a-zA-Z0-9_-]/g, '_')}" style="display: none; margin-top: 8px; padding: 10px; border: 1px solid var(--section-border); border-radius: 6px; max-height: 300px; overflow-y: auto; background: var(--pre-bg); font-size: 0.85em;"></div>
                         `;
 
-                        // NEW: Display Ollama models if available
+                        // Display Ollama models if available
                         if (details.ollama_models && details.ollama_models.length > 0) {
                             const ollamaModelsHtml = `
                                 <span><strong>Ollama Models:</strong> ${details.ollama_models.join(', ')}</span><br>
                             `;
-                            // Insert before the form, or inside the agent-status div
                             li.querySelector('.agent-status > div').insertAdjacentHTML('beforeend', ollamaModelsHtml);
                         }
 
@@ -1602,9 +1621,81 @@
                     document.querySelectorAll('.send-message-form').forEach(form => {
                         form.addEventListener('submit', handleSendMessageToAgent);
                     });
+                    document.querySelectorAll('.view-memories-btn').forEach(button => {
+                        button.addEventListener('click', () => viewAgentMemories(button.dataset.agent));
+                    });
+                    document.querySelectorAll('.view-logs-btn').forEach(button => {
+                        button.addEventListener('click', () => viewAgentLogs(button.dataset.agent));
+                    });
                 }
             } catch (error) {
                 console.error('Error fetching active agents:', error);
+            }
+        }
+
+        function formatUptime(seconds) {
+            if (seconds < 60) return seconds + 's';
+            if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            return h + 'h ' + m + 'm';
+        }
+
+        async function viewAgentMemories(agentName) {
+            const panelId = 'agent-panel-' + agentName.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const panel = document.getElementById(panelId);
+            if (panel.style.display !== 'none' && panel.dataset.view === 'memories') {
+                panel.style.display = 'none';
+                return;
+            }
+            panel.dataset.view = 'memories';
+            panel.style.display = 'block';
+            panel.innerHTML = '<p>Loading memories...</p>';
+            try {
+                const response = await fetch(`/api/agent/${encodeURIComponent(agentName)}/memories`);
+                const data = await response.json();
+                const memories = data.memories || [];
+                if (memories.length === 0) {
+                    panel.innerHTML = '<p style="color: #888;">No memories recorded yet.</p>';
+                    return;
+                }
+                let html = '<table style="width:100%; font-size: 0.9em;"><thead><tr><th>Task</th><th>Tool</th><th>Status</th><th>Time</th></tr></thead><tbody>';
+                for (const m of memories) {
+                    const task = (m.task || '').substring(0, 60);
+                    const tool = m.step ? (m.step.tool || '—') : '—';
+                    const status = m.step_result ? (m.step_result.status || '—') : '—';
+                    const ts = m.timestamp ? moment(m.timestamp * 1000).format('HH:mm:ss') : '—';
+                    const color = status === 'failed' ? '#e74c3c' : (status === 'success' ? '#27ae60' : 'inherit');
+                    html += `<tr><td>${task}</td><td>${tool}</td><td style="color:${color}">${status}</td><td>${ts}</td></tr>`;
+                }
+                html += '</tbody></table>';
+                panel.innerHTML = html;
+            } catch (e) {
+                panel.innerHTML = '<p style="color: #e74c3c;">Error loading memories.</p>';
+            }
+        }
+
+        async function viewAgentLogs(agentName) {
+            const panelId = 'agent-panel-' + agentName.replace(/[^a-zA-Z0-9_-]/g, '_');
+            const panel = document.getElementById(panelId);
+            if (panel.style.display !== 'none' && panel.dataset.view === 'logs') {
+                panel.style.display = 'none';
+                return;
+            }
+            panel.dataset.view = 'logs';
+            panel.style.display = 'block';
+            panel.innerHTML = '<p>Loading logs...</p>';
+            try {
+                const response = await fetch(`/api/agent/${encodeURIComponent(agentName)}/logs?lines=80`);
+                const data = await response.json();
+                const stdout = (data.stdout || []).join('');
+                const stderr = (data.stderr || []).join('');
+                let html = '<div style="margin-bottom: 6px;"><button type="button" onclick="this.parentElement.nextElementSibling.style.display=\'block\';this.parentElement.nextElementSibling.nextElementSibling.style.display=\'none\'" style="padding:2px 8px;cursor:pointer;font-size:0.85em;">stdout</button> <button type="button" onclick="this.parentElement.nextElementSibling.style.display=\'none\';this.parentElement.nextElementSibling.nextElementSibling.style.display=\'block\'" style="padding:2px 8px;cursor:pointer;font-size:0.85em;">stderr</button></div>';
+                html += `<pre style="white-space: pre-wrap; margin: 0; max-height: 250px; overflow-y: auto;">${stdout || '(empty)'}</pre>`;
+                html += `<pre style="white-space: pre-wrap; margin: 0; max-height: 250px; overflow-y: auto; display: none; color: #e74c3c;">${stderr || '(empty)'}</pre>`;
+                panel.innerHTML = html;
+            } catch (e) {
+                panel.innerHTML = '<p style="color: #e74c3c;">Error loading logs.</p>';
             }
         }
 
@@ -1726,9 +1817,19 @@
                 const perAgent = data.per_agent || {};
                 const displayDiv = document.getElementById('token-usage-display');
 
-                // --- Global totals table ---
+                // Fetch cost data
+                let costData = {};
+                let totalCost = 0;
+                try {
+                    const costResp = await fetch('/api/token_costs');
+                    const costJson = await costResp.json();
+                    costData = costJson.costs || {};
+                    totalCost = costJson.total_cost || 0;
+                } catch (e) {}
+
+                // --- Global totals table with cost ---
                 let html = '<h3 style="margin-top:0;">Global Totals</h3>';
-                html += '<table><thead><tr><th>Provider</th><th>Prompt Tokens</th><th>Completion Tokens</th><th>Total Tokens</th></tr></thead><tbody>';
+                html += '<table><thead><tr><th>Provider</th><th>Prompt Tokens</th><th>Completion Tokens</th><th>Total Tokens</th><th>Est. Cost</th></tr></thead><tbody>';
                 let overallTotalPrompt = 0;
                 let overallTotalCompletion = 0;
 
@@ -1738,9 +1839,10 @@
                     const totalTokens = promptTokens + completionTokens;
                     overallTotalPrompt += promptTokens;
                     overallTotalCompletion += completionTokens;
-                    html += `<tr><td>${provider}</td><td>${promptTokens}</td><td>${completionTokens}</td><td>${totalTokens}</td></tr>`;
+                    const cost = costData[provider] ? '$' + costData[provider].total_cost.toFixed(4) : '$0.00';
+                    html += `<tr><td>${provider}</td><td>${promptTokens}</td><td>${completionTokens}</td><td>${totalTokens}</td><td>${cost}</td></tr>`;
                 }
-                html += `</tbody><tfoot><tr><td><strong>Overall Total</strong></td><td><strong>${overallTotalPrompt}</strong></td><td><strong>${overallTotalCompletion}</strong></td><td><strong>${overallTotalPrompt + overallTotalCompletion}</strong></td></tr></tfoot></table>`;
+                html += `</tbody><tfoot><tr><td><strong>Overall Total</strong></td><td><strong>${overallTotalPrompt}</strong></td><td><strong>${overallTotalCompletion}</strong></td><td><strong>${overallTotalPrompt + overallTotalCompletion}</strong></td><td><strong>$${totalCost.toFixed(4)}</strong></td></tr></tfoot></table>`;
 
                 // --- Per-agent breakdown ---
                 const agentNames = Object.keys(perAgent);

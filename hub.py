@@ -291,7 +291,7 @@ def register_agent():
     agent_name = data.get("name")
     agent_url = data.get("url")
     if agent_name and agent_url:
-        hub_memory["active_agents"][agent_name] = {"url": agent_url, "last_heartbeat": time.time()}
+        hub_memory["active_agents"][agent_name] = {"url": agent_url, "last_heartbeat": time.time(), "registered_at": time.time()}
         hub_memory["agent_message_queues"][agent_name] = [] # Initialize message queue for new agent
         logger.info(f"Agent '{agent_name}' registered with URL: {agent_url}")
         return jsonify({"status": "success", "message": f"Agent {agent_name} registered."}), 200
@@ -1231,6 +1231,124 @@ def api_delete_agent_template(template_id):
     hub_memory["agent_templates"] = [t for t in hub_memory["agent_templates"] if t["id"] != template_id]
     _save_agent_templates()
     return jsonify({"status": "success"}), 200
+
+
+# ─── Agent Memory Viewer ───
+
+@app.route("/api/agent/<agent_name>/memories", methods=["GET"])
+def api_agent_memories(agent_name):
+    """Return experiences stored in hub_memory for a given agent."""
+    agent_experiences = [
+        exp for exp in hub_memory["experiences"]
+        if exp.get("agent_name") == agent_name
+    ]
+    # Return most recent first, limit to 50
+    agent_experiences = list(reversed(agent_experiences[-50:]))
+    return jsonify({"status": "success", "memories": agent_experiences}), 200
+
+
+# ─── Agent Log Viewer ───
+
+@app.route("/api/agent/<agent_name>/logs", methods=["GET"])
+def api_agent_logs(agent_name):
+    """Return the last N lines of an agent's stdout and stderr logs."""
+    max_lines = int(request.args.get("lines", 100))
+    base_dir = os.path.dirname(__file__)
+
+    def _read_tail(filepath, n):
+        try:
+            with open(filepath, "r") as f:
+                lines = f.readlines()
+                return lines[-n:]
+        except FileNotFoundError:
+            return []
+        except Exception as e:
+            return [f"Error reading log: {e}"]
+
+    stdout_path = os.path.join(base_dir, f"agent_{agent_name}_stdout.log")
+    stderr_path = os.path.join(base_dir, f"agent_{agent_name}_stderr.log")
+
+    return jsonify({
+        "status": "success",
+        "stdout": _read_tail(stdout_path, max_lines),
+        "stderr": _read_tail(stderr_path, max_lines)
+    }), 200
+
+
+# ─── Agent Health Tracking ───
+
+@app.route("/api/agent_health", methods=["GET"])
+def api_agent_health():
+    """Return per-agent health stats: uptime, tasks completed, errors, tokens."""
+    health = {}
+    now = time.time()
+    for agent_name, details in hub_memory["active_agents"].items():
+        # Count tasks and errors from experiences
+        agent_exps = [e for e in hub_memory["experiences"] if e.get("agent_name") == agent_name]
+        tasks_completed = sum(
+            1 for e in agent_exps
+            if e.get("step_result", {}).get("status") not in ("failed", "denied", None)
+        )
+        errors = sum(
+            1 for e in agent_exps
+            if e.get("step_result", {}).get("status") == "failed"
+        )
+        # Uptime from first heartbeat
+        registered_at = details.get("registered_at", details.get("last_heartbeat", now))
+        uptime_seconds = int(now - registered_at)
+        # Last heartbeat age
+        last_hb = details.get("last_heartbeat", 0)
+        hb_age = int(now - last_hb) if last_hb else None
+        # Token usage for this agent
+        agent_tokens = hub_memory["per_agent_token_usage"].get(agent_name, {})
+        total_tokens = sum(v.get("prompt_tokens", 0) + v.get("completion_tokens", 0) for v in agent_tokens.values())
+
+        health[agent_name] = {
+            "uptime_seconds": uptime_seconds,
+            "tasks_completed": tasks_completed,
+            "errors": errors,
+            "last_heartbeat_age": hb_age,
+            "total_tokens": total_tokens,
+            "url": details.get("url", "")
+        }
+    return jsonify({"status": "success", "health": health}), 200
+
+
+# ─── Cost Estimator ───
+
+# Approximate pricing per 1M tokens (prompt / completion) — update as needed
+_PROVIDER_PRICING = {
+    "openrouter": {"prompt": 0.0, "completion": 0.0},  # Varies by model, free models = $0
+    "huggingface": {"prompt": 0.0, "completion": 0.0},  # Free tier
+    "ollama": {"prompt": 0.0, "completion": 0.0},       # Self-hosted, no cost
+    "moonshot_ai": {"prompt": 1.0, "completion": 1.0},  # ~$1/M tokens
+    "voyage_ai": {"prompt": 0.1, "completion": 0.0},    # Embeddings only
+}
+
+@app.route("/api/token_costs", methods=["GET"])
+def api_token_costs():
+    """Return estimated costs based on token usage and provider pricing."""
+    costs = {}
+    total_cost = 0.0
+    for provider, usage in hub_memory["total_token_usage"].items():
+        pricing = _PROVIDER_PRICING.get(provider, {"prompt": 0.0, "completion": 0.0})
+        prompt_cost = (usage["prompt_tokens"] / 1_000_000) * pricing["prompt"]
+        completion_cost = (usage["completion_tokens"] / 1_000_000) * pricing["completion"]
+        provider_cost = prompt_cost + completion_cost
+        costs[provider] = {
+            "prompt_tokens": usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "prompt_cost": round(prompt_cost, 6),
+            "completion_cost": round(completion_cost, 6),
+            "total_cost": round(provider_cost, 6)
+        }
+        total_cost += provider_cost
+    return jsonify({
+        "status": "success",
+        "costs": costs,
+        "total_cost": round(total_cost, 6),
+        "pricing": _PROVIDER_PRICING
+    }), 200
 
 
 # ─── Software Update System ───

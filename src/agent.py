@@ -450,6 +450,13 @@ class Agent:
                 tool_name = step.get("tool")
                 tool_args = step.get("args", {})
                 goal = step.get("goal", "No goal specified.")
+
+                # Auto-inject agent_name for tools that need it (LLM doesn't know the agent's own name)
+                if tool_name == "send_user_message" and "agent_name" not in tool_args:
+                    tool_args["agent_name"] = self.agent_name
+                if tool_name == "send_agent_message" and "sender_agent_name" not in tool_args:
+                    tool_args["sender_agent_name"] = self.agent_name
+
                 self.logger.info(f"Agent {self.agent_name} - Step Goal: {goal}, Tool: {tool_name}, Args: {tool_args}")
 
                 tool_output = None
