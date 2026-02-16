@@ -273,6 +273,27 @@
                             <div class="tooltip-text">If "Proactive Loops" are enabled, this defines the duration (in seconds) the agent waits between cycles of checking for new messages, goals, and performing proactive tasks. A shorter interval means higher responsiveness and activity, while a longer interval consumes fewer resources.</div>
                         </div>
                     </div>
+                    <div style="grid-column: 1 / span 2;">
+                        <div class="tooltip-container">
+                            <label for="agent-llm-provider">LLM Provider Override:<span class="tooltip-icon">?</span></label>
+                            <select id="agent-llm-provider" name="llm_provider" onchange="toggleAgentLlmFields()" style="padding: 6px; width: 100%;">
+                                <option value="">Use Global Settings</option>
+                                <option value="openrouter">OpenRouter</option>
+                                <option value="huggingface">HuggingFace</option>
+                                <option value="ollama">Ollama</option>
+                                <option value="moonshot">Moonshot AI</option>
+                            </select>
+                            <div class="tooltip-text">Override the global LLM provider for this agent. When set, this agent will use its own API key and model instead of the global settings. Other agents are not affected.</div>
+                        </div>
+                    </div>
+                    <div id="agent-llm-key-wrapper" style="grid-column: 1 / span 2; display: none;">
+                        <label for="agent-llm-api-key">API Key (for this agent):</label>
+                        <input type="password" id="agent-llm-api-key" name="llm_api_key" placeholder="Enter API key for this agent" style="width: 100%;">
+                    </div>
+                    <div id="agent-llm-model-wrapper" style="grid-column: 1 / span 2; display: none;">
+                        <label for="agent-llm-model">Model (for this agent):</label>
+                        <input type="text" id="agent-llm-model" name="llm_model" placeholder="e.g., meta-llama/Llama-3-8B" style="width: 100%;">
+                    </div>
                     <div style="grid-column: 1 / span 2;"><label for="initial-goal">Initial Goal/Task (Optional):</label><textarea id="initial-goal" name="initial_goal" rows="3"></textarea></div>
                     <button type="submit" style="grid-column: 1 / span 2;">Launch New Agent</button>
                 </form>
@@ -470,6 +491,13 @@
                         <label for="default-proactive-interval">Proactive Interval (seconds):<span class="tooltip-icon">?</span></label>
                         <input type="number" id="default-proactive-interval" name="DEFAULT_PROACTIVE_INTERVAL" min="10">
                         <div class="tooltip-text">If "Proactive Loops" are enabled, this defines the duration (in seconds) the agent waits between cycles of checking for new messages, goals, and performing proactive tasks. A shorter interval means higher responsiveness and activity, while a longer interval consumes fewer resources.</div>
+                    </div>
+                    <div class="tooltip-container">
+                        <label for="scheduler-timezone">Scheduler Timezone:<span class="tooltip-icon">?</span></label>
+                        <select id="scheduler-timezone" name="SCHEDULER_TIMEZONE" style="padding: 6px; min-width: 250px;">
+                            <option value="UTC">UTC</option>
+                        </select>
+                        <div class="tooltip-text">The timezone used by the scheduler for cron-based scheduled tasks. Set this to your local timezone so tasks fire at the correct local time.</div>
                     </div>
                     <p class="disclaimer">
                         <strong>Disclaimer:</strong> Agent capabilities and behavior are highly dependent on these settings.
@@ -723,6 +751,18 @@
             } catch (error) {
                 console.error('Error fetching HuggingFace models:', error);
                 select.innerHTML = '<option value="">-- Failed to load models --</option>';
+            }
+        }
+
+        // --- Per-Agent LLM Override ---
+        function toggleAgentLlmFields() {
+            const provider = document.getElementById('agent-llm-provider').value;
+            const showFields = provider !== '';
+            document.getElementById('agent-llm-key-wrapper').style.display = showFields ? 'block' : 'none';
+            document.getElementById('agent-llm-model-wrapper').style.display = showFields ? 'block' : 'none';
+            // Ollama doesn't need an API key
+            if (provider === 'ollama') {
+                document.getElementById('agent-llm-key-wrapper').style.display = 'none';
             }
         }
 
@@ -1054,6 +1094,24 @@
                 document.getElementById('enable-voyage-ai').checked = (config.ENABLE_VOYAGE_AI === 'yes');
                 document.getElementById('exa-api-key').value = config.EXA_API_KEY || '';
 
+                // Populate scheduler timezone dropdown
+                try {
+                    const tzResp = await fetch('/api/timezones');
+                    const timezones = await tzResp.json();
+                    const tzSelect = document.getElementById('scheduler-timezone');
+                    const currentTz = config.SCHEDULER_TIMEZONE || 'UTC';
+                    tzSelect.innerHTML = '';
+                    timezones.forEach(tz => {
+                        const opt = document.createElement('option');
+                        opt.value = tz;
+                        opt.textContent = tz;
+                        if (tz === currentTz) opt.selected = true;
+                        tzSelect.appendChild(opt);
+                    });
+                } catch (e) {
+                    console.error('Error loading timezones:', e);
+                }
+
                 // Set initial values for Add New Agent form based on Admin Settings defaults
                 document.getElementById('proactive-loops').checked = (config.DEFAULT_PROACTIVE_LOOPS === 'yes');
                 document.getElementById('execution-mode').value = config.DEFAULT_EXECUTION_MODE || 'safe';
@@ -1342,22 +1400,49 @@
         async function fetchAndDisplayTokenUsage() {
             try {
                 const response = await fetch('/api/token_usage');
-                const tokenUsage = await response.json();
+                const data = await response.json();
+                const globalUsage = data.global || {};
+                const perAgent = data.per_agent || {};
                 const displayDiv = document.getElementById('token-usage-display');
 
-                let html = '<table><thead><tr><th>Provider</th><th>Prompt Tokens</th><th>Completion Tokens</th><th>Total Tokens</th></tr></thead><tbody>';
+                // --- Global totals table ---
+                let html = '<h3 style="margin-top:0;">Global Totals</h3>';
+                html += '<table><thead><tr><th>Provider</th><th>Prompt Tokens</th><th>Completion Tokens</th><th>Total Tokens</th></tr></thead><tbody>';
                 let overallTotalPrompt = 0;
                 let overallTotalCompletion = 0;
 
-                for (const provider in tokenUsage) {
-                    const promptTokens = tokenUsage[provider].prompt_tokens;
-                    const completionTokens = tokenUsage[provider].completion_tokens;
+                for (const provider in globalUsage) {
+                    const promptTokens = globalUsage[provider].prompt_tokens;
+                    const completionTokens = globalUsage[provider].completion_tokens;
                     const totalTokens = promptTokens + completionTokens;
                     overallTotalPrompt += promptTokens;
                     overallTotalCompletion += completionTokens;
                     html += `<tr><td>${provider}</td><td>${promptTokens}</td><td>${completionTokens}</td><td>${totalTokens}</td></tr>`;
                 }
                 html += `</tbody><tfoot><tr><td><strong>Overall Total</strong></td><td><strong>${overallTotalPrompt}</strong></td><td><strong>${overallTotalCompletion}</strong></td><td><strong>${overallTotalPrompt + overallTotalCompletion}</strong></td></tr></tfoot></table>`;
+
+                // --- Per-agent breakdown ---
+                const agentNames = Object.keys(perAgent);
+                if (agentNames.length > 0) {
+                    html += '<h3>Per-Agent Breakdown</h3>';
+                    for (const agentName of agentNames) {
+                        const agentUsage = perAgent[agentName];
+                        let agentPrompt = 0, agentCompletion = 0;
+                        let rows = '';
+                        for (const provider in agentUsage) {
+                            const p = agentUsage[provider].prompt_tokens;
+                            const c = agentUsage[provider].completion_tokens;
+                            agentPrompt += p;
+                            agentCompletion += c;
+                            rows += `<tr><td>${provider}</td><td>${p}</td><td>${c}</td><td>${p + c}</td></tr>`;
+                        }
+                        html += `<h4 style="margin-bottom:4px;">${agentName}</h4>`;
+                        html += '<table><thead><tr><th>Provider</th><th>Prompt</th><th>Completion</th><th>Total</th></tr></thead><tbody>';
+                        html += rows;
+                        html += `</tbody><tfoot><tr><td><strong>Agent Total</strong></td><td><strong>${agentPrompt}</strong></td><td><strong>${agentCompletion}</strong></td><td><strong>${agentPrompt + agentCompletion}</strong></td></tr></tfoot></table>`;
+                    }
+                }
+
                 displayDiv.innerHTML = html;
 
             } catch (error) {

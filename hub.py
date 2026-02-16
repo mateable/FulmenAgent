@@ -21,6 +21,7 @@ import subprocess as _subprocess  # For update system git/pip commands
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+import pytz
 
 # Configure logging for the hub
 log_file_path = os.path.join(os.path.dirname(__file__), "agent_debug.log")
@@ -49,6 +50,7 @@ hub_memory = {
         "voyage_ai": {"prompt_tokens": 0, "completion_tokens": 0},
         "huggingface": {"prompt_tokens": 0, "completion_tokens": 0}
     },
+    "per_agent_token_usage": {},  # {"AgentName": {"openrouter": {"prompt_tokens": 0, "completion_tokens": 0}, ...}}
     "global_plugin_preferences": {}, # NEW: To store global enable/disable status for plugins
     "global_auto_install_deps": True, # NEW: Global setting for auto-installing plugin dependencies
     "discovered_plugins": {}, # NEW: To store details of all plugins found in the plugins directory
@@ -123,7 +125,8 @@ _discover_all_plugins()
 
 # ─── Scheduled Tasks System ───
 
-_scheduler = BackgroundScheduler()
+_scheduler_timezone = os.environ.get("SCHEDULER_TIMEZONE", "UTC")
+_scheduler = BackgroundScheduler(timezone=_scheduler_timezone)
 _scheduler.start()
 atexit.register(lambda: _scheduler.shutdown(wait=False))
 
@@ -157,10 +160,12 @@ def _register_task_with_scheduler(task):
     """Register a single task dict with APScheduler."""
     try:
         if task["schedule_type"] == "cron":
+            tz = os.environ.get("SCHEDULER_TIMEZONE", "UTC")
             trigger = CronTrigger(
                 hour=int(task.get("cron_hour", 9)),
                 minute=int(task.get("cron_minute", 0)),
-                day_of_week=task.get("cron_days", "*")
+                day_of_week=task.get("cron_days", "*"),
+                timezone=tz
             )
         else:
             trigger = IntervalTrigger(seconds=int(task.get("interval_seconds", 3600)))
@@ -270,25 +275,36 @@ def submit_experience():
         # Aggregate token usage if present in the experience
         if "token_usage" in exp and exp["token_usage"]:
             token_data = exp["token_usage"]
-            # Handle flat format: {"provider": "ollama", "prompt_tokens": 10, ...}
-            if "provider" in token_data and token_data["provider"] != "none":
-                provider = token_data["provider"]
-                prompt_tokens = token_data.get("prompt_tokens", 0)
-                completion_tokens = token_data.get("completion_tokens", 0)
+            agent_name = exp.get("agent_name", "unknown")
+
+            # Ensure per-agent bucket exists
+            if agent_name not in hub_memory["per_agent_token_usage"]:
+                hub_memory["per_agent_token_usage"][agent_name] = {}
+
+            def _add_tokens(provider, prompt_tokens, completion_tokens):
+                """Add tokens to both global and per-agent tracking."""
+                # Global
                 if provider not in hub_memory["total_token_usage"]:
                     hub_memory["total_token_usage"][provider] = {"prompt_tokens": 0, "completion_tokens": 0}
                 hub_memory["total_token_usage"][provider]["prompt_tokens"] += prompt_tokens
                 hub_memory["total_token_usage"][provider]["completion_tokens"] += completion_tokens
-                logger.debug(f"Aggregated token usage for {provider}: Prompt={prompt_tokens}, Completion={completion_tokens}")
+                # Per-agent
+                agent_bucket = hub_memory["per_agent_token_usage"][agent_name]
+                if provider not in agent_bucket:
+                    agent_bucket[provider] = {"prompt_tokens": 0, "completion_tokens": 0}
+                agent_bucket[provider]["prompt_tokens"] += prompt_tokens
+                agent_bucket[provider]["completion_tokens"] += completion_tokens
+
+            # Handle flat format: {"provider": "ollama", "prompt_tokens": 10, ...}
+            if "provider" in token_data and token_data["provider"] != "none":
+                _add_tokens(token_data["provider"], token_data.get("prompt_tokens", 0), token_data.get("completion_tokens", 0))
+                logger.debug(f"Aggregated token usage for {token_data['provider']} (agent={agent_name})")
             else:
                 # Handle nested format: {"ollama": {"prompt_tokens": 10, ...}, "openrouter": {...}}
                 for provider, usage in token_data.items():
                     if isinstance(usage, dict) and (usage.get("prompt_tokens", 0) > 0 or usage.get("completion_tokens", 0) > 0):
-                        if provider not in hub_memory["total_token_usage"]:
-                            hub_memory["total_token_usage"][provider] = {"prompt_tokens": 0, "completion_tokens": 0}
-                        hub_memory["total_token_usage"][provider]["prompt_tokens"] += usage.get("prompt_tokens", 0)
-                        hub_memory["total_token_usage"][provider]["completion_tokens"] += usage.get("completion_tokens", 0)
-                        logger.debug(f"Aggregated token usage for {provider}: Prompt={usage.get('prompt_tokens', 0)}, Completion={usage.get('completion_tokens', 0)}")
+                        _add_tokens(provider, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+                        logger.debug(f"Aggregated token usage for {provider} (agent={agent_name})")
 
     logger.debug(f"Received {len(experiences)} experiences.")
     return jsonify({"status": "success", "message": "Experiences submitted."}), 200
@@ -517,7 +533,10 @@ def get_approvals():
 
 @app.route("/api/token_usage", methods=["GET"])
 def get_token_usage():
-    return jsonify(hub_memory["total_token_usage"]), 200
+    return jsonify({
+        "global": hub_memory["total_token_usage"],
+        "per_agent": hub_memory["per_agent_token_usage"]
+    }), 200
 
 @app.route("/api/approve/<request_id>", methods=["POST"])
 def approve_request(request_id):
@@ -571,7 +590,8 @@ def api_get_config():
         "VOYAGE_AI_API_KEY",
         "ENABLE_VOYAGE_AI", "ENABLE_VOICE_TOOLS", "EMAIL_API_SERVICE", "EMAIL_API_AUTH_METHOD",
         "CALENDAR_API_SERVICE", "CALENDAR_API_AUTH_METHOD", "DEFAULT_PROACTIVE_LOOPS",
-        "DEFAULT_EXECUTION_MODE", "DEFAULT_BATCH_EXPERIENCE", "DEFAULT_PROACTIVE_INTERVAL"
+        "DEFAULT_EXECUTION_MODE", "DEFAULT_BATCH_EXPERIENCE", "DEFAULT_PROACTIVE_INTERVAL",
+        "SCHEDULER_TIMEZONE"
     ]
     
     # List of keys that are sensitive and should be masked
@@ -860,10 +880,17 @@ def reset_hub():
         "voyage_ai": {"prompt_tokens": 0, "completion_tokens": 0},
         "huggingface": {"prompt_tokens": 0, "completion_tokens": 0}
     }
+    hub_memory["per_agent_token_usage"] = {}
     # Keep global_plugin_preferences, global_auto_install_deps, discovered_plugins, scheduled_tasks
 
     logger.info(f"Hub reset complete. Killed {killed} agents, cleared all memory.")
     return jsonify({"status": "success", "message": f"Hub reset. Killed {killed} agent(s), cleared all data."}), 200
+
+
+@app.route("/api/timezones", methods=["GET"])
+def api_timezones():
+    """Return list of common timezones for the dashboard dropdown."""
+    return jsonify({"status": "success", "timezones": pytz.common_timezones}), 200
 
 
 # ─── Scheduled Tasks API ───
@@ -1133,6 +1160,31 @@ def launch_agent():
             env['PYTHONPATH'] = f"{project_root}:{env['PYTHONPATH']}"
         else:
             env['PYTHONPATH'] = project_root
+
+        # --- Per-agent LLM provider override ---
+        llm_provider = data.get("llm_provider", "")
+        llm_api_key = data.get("llm_api_key", "")
+        llm_model = data.get("llm_model", "")
+
+        if llm_provider:
+            # Map provider name to env var prefixes
+            provider_map = {
+                "openrouter": {"key": "OPENROUTER_API_KEY", "model": "OPENROUTER_MODEL", "enable": "ENABLE_OPENROUTER"},
+                "huggingface": {"key": "HUGGINGFACE_API_KEY", "model": "HUGGINGFACE_MODEL", "enable": "ENABLE_HUGGINGFACE"},
+                "ollama":      {"key": None,                  "model": "OLLAMA_MODEL",      "enable": "ENABLE_OLLAMA"},
+                "moonshot":    {"key": "MOONSHOT_API_KEY",    "model": "MOONSHOT_MODEL",    "enable": "ENABLE_MOONSHOT_AI"},
+            }
+            pinfo = provider_map.get(llm_provider)
+            if pinfo:
+                # Disable all providers first, then enable only the selected one
+                for p in provider_map.values():
+                    env[p["enable"]] = "no"
+                env[pinfo["enable"]] = "yes"
+                if pinfo["key"] and llm_api_key:
+                    env[pinfo["key"]] = llm_api_key
+                if llm_model:
+                    env[pinfo["model"]] = llm_model
+                logger.info(f"Agent '{agent_name}' using per-agent LLM: provider={llm_provider}, model={llm_model or '(default)'}")
 
         with open(agent_stdout_path, "w") as stdout_file, open(agent_stderr_path, "w") as stderr_file:
             # Explicitly redirect stdin to /dev/null to ensure non-interactivity
