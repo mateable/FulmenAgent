@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Network Dashboard</title>
-    
+    <title>FulMen Agent Network</title>
+
     <style>
         /* Light Theme (Default) */
         :root {
@@ -28,19 +28,25 @@
             --inactive-recent-status: orange;
             --inactive-old-status: red;
             --table-border-color: #ccc;
+            --header-bg: #1a1a2e;
+            --sidebar-bg: #16213e;
+            --sidebar-hover: #1a2744;
+            --sidebar-active: #0f3460;
+            --sidebar-text: #c8d6e5;
+            --sidebar-text-active: #ffffff;
         }
 
         /* Dark Theme */
         body.dark-theme {
-            --bg-color: #18191a;
+            --bg-color: #0d1117;
             --text-color: #e4e6eb;
             --primary-color: #2e89ff;
             --secondary-color: #b0b3b8;
-            --section-bg: #242526;
-            --section-border: #3a3b3c;
-            --list-item-bg: #3a3b3c;
-            --pre-bg: #3a3b3c;
-            --pre-border: #4e4f50;
+            --section-bg: #161b22;
+            --section-border: #30363d;
+            --list-item-bg: #21262d;
+            --pre-bg: #21262d;
+            --pre-border: #30363d;
             --button-hover-color: #2677e8;
             --shutdown-bg: #c90f0f;
             --shutdown-hover: #a10c0c;
@@ -51,131 +57,141 @@
             --active-status: #4CAF50;
             --inactive-recent-status: #FF9800;
             --inactive-old-status: #F44336;
-            --table-border-color: #4e4f50;
+            --table-border-color: #30363d;
+            --header-bg: #0d1117;
+            --sidebar-bg: #161b22;
+            --sidebar-hover: #1c2333;
+            --sidebar-active: #1f6feb33;
+            --sidebar-text: #8b949e;
+            --sidebar-text-active: #e6edf3;
         }
 
         /* Tooltip styles */
-        .tooltip-container {
-            position: relative;
-            display: inline-block; /* Or block, depending on desired layout */
-        }
-
-        .tooltip-icon {
-            cursor: help;
-            margin-left: 5px;
-            color: var(--primary-color);
-            font-weight: bold;
-        }
-
+        .tooltip-container { position: relative; display: inline-block; }
+        .tooltip-icon { cursor: help; margin-left: 5px; color: var(--primary-color); font-weight: bold; }
         .tooltip-text {
-            visibility: hidden;
-            width: 300px;
-            background-color: var(--section-bg);
-            color: var(--text-color);
-            text-align: left;
-            border-radius: 6px;
-            padding: 10px;
-            position: absolute;
-            z-index: 1;
-            bottom: 125%; /* Position the tooltip above the text */
-            left: 50%;
-            margin-left: -150px; /* Center the tooltip */
-            opacity: 0;
-            transition: opacity 0.3s;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-            border: 1px solid var(--section-border);
+            visibility: hidden; width: 300px; background-color: var(--section-bg); color: var(--text-color);
+            text-align: left; border-radius: 6px; padding: 10px; position: absolute; z-index: 1;
+            bottom: 125%; left: 50%; margin-left: -150px; opacity: 0; transition: opacity 0.3s;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2); border: 1px solid var(--section-border);
         }
-
-        .tooltip-container:hover .tooltip-text,
-        .tooltip-icon:hover + .tooltip-text {
-            visibility: visible;
-            opacity: 1;
-        }
+        .tooltip-container:hover .tooltip-text, .tooltip-icon:hover + .tooltip-text { visibility: visible; opacity: 1; }
 
         /* Toggle switch styling */
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 34px;
-            height: 20px;
-            vertical-align: middle;
-            margin-left: 10px;
-        }
-
-        .switch input { 
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
+        .switch { position: relative; display: inline-block; width: 34px; height: 20px; vertical-align: middle; margin-left: 10px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
         .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #ccc;
-            -webkit-transition: .4s;
-            transition: .4s;
-            border-radius: 20px;
+            position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #ccc; transition: .4s; border-radius: 20px;
         }
-
         .slider:before {
-            position: absolute;
-            content: "";
-            height: 16px;
-            width: 16px;
-            left: 2px;
-            bottom: 2px;
-            background-color: white;
-            -webkit-transition: .4s;
-            transition: .4s;
-            border-radius: 50%;
+            position: absolute; content: ""; height: 16px; width: 16px; left: 2px; bottom: 2px;
+            background-color: white; transition: .4s; border-radius: 50%;
         }
+        input:checked + .slider { background-color: var(--primary-color); }
+        input:focus + .slider { box-shadow: 0 0 1px var(--primary-color); }
+        input:checked + .slider:before { transform: translateX(14px); }
 
-        input:checked + .slider {
-            background-color: var(--primary-color);
-        }
-
-        input:focus + .slider {
-            box-shadow: 0 0 1px var(--primary-color);
-        }
-
-        input:checked + .slider:before {
-            -webkit-transform: translateX(14px);
-            -ms-transform: translateX(14px);
-            transform: translateX(14px);
-        }
-        /* End Toggle switch styling */
-
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
-            margin: 0; 
-            background-color: var(--bg-color); 
-            color: var(--text-color);
+        /* ─── Base ─── */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0; background-color: var(--bg-color); color: var(--text-color);
             transition: background-color 0.3s ease, color 0.3s ease;
         }
-        .container { max-width: 1400px; margin: auto; padding: 20px; }
+
+        /* ─── Top Header ─── */
+        .top-header {
+            position: fixed; top: 0; left: 0; right: 0; height: 56px; z-index: 1000;
+            background: var(--header-bg); border-bottom: 1px solid rgba(255,255,255,0.08);
+            display: flex; align-items: center; justify-content: space-between; padding: 0 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .header-left { display: flex; align-items: center; gap: 12px; }
+        .app-logo { font-size: 1.25em; font-weight: 700; color: #fff; letter-spacing: -0.3px; }
+        .app-logo-accent { color: var(--primary-color); }
+        #version-badge {
+            font-size: 0.7em; background: rgba(255,255,255,0.1); color: #8b949e;
+            padding: 3px 10px; border-radius: 12px; cursor: pointer;
+        }
+        .header-right { display: flex; align-items: center; gap: 16px; }
+        .header-time { font-size: 0.85em; color: #8b949e; }
+        .icon-btn {
+            background: none; border: none; cursor: pointer; font-size: 1.3em; padding: 6px;
+            border-radius: 8px; transition: background 0.2s; line-height: 1; color: #8b949e;
+        }
+        .icon-btn:hover { background: rgba(255,255,255,0.1); }
+        #notification-bell { position: relative; cursor: pointer; display: flex; align-items: center; }
+        #notification-bell .bell-icon { font-size: 1.3em; color: #8b949e; transition: color 0.2s; }
+        #notification-bell:hover .bell-icon { color: #fff; }
+        #notif-badge {
+            display: none; position: absolute; top: -4px; right: -8px;
+            background: #e74c3c; color: white; border-radius: 50%;
+            font-size: 0.6em; padding: 2px 6px; font-weight: bold; min-width: 8px; text-align: center;
+        }
+        #notification-panel {
+            display: none; position: fixed; top: 56px; right: 20px; width: 380px; max-height: 400px;
+            overflow-y: auto; background: var(--section-bg); border: 1px solid var(--section-border);
+            border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); z-index: 1001; padding: 12px;
+        }
+
+        /* ─── Sidebar ─── */
+        .sidebar {
+            position: fixed; top: 56px; left: 0; bottom: 0; width: 220px; z-index: 999;
+            background: var(--sidebar-bg); border-right: 1px solid rgba(255,255,255,0.06);
+            display: flex; flex-direction: column; overflow-y: auto;
+            box-shadow: 2px 0 8px rgba(0,0,0,0.15);
+        }
+        .sidebar-menu { flex: 1; padding: 12px 0; }
+        .sidebar-item {
+            display: flex; align-items: center; gap: 10px; padding: 11px 20px;
+            color: var(--sidebar-text); cursor: pointer; transition: all 0.2s; font-size: 0.92em;
+            border-left: 3px solid transparent; text-decoration: none; position: relative;
+        }
+        .sidebar-item:hover { background: var(--sidebar-hover); color: var(--sidebar-text-active); }
+        .sidebar-item.active {
+            background: var(--sidebar-active); color: var(--sidebar-text-active);
+            border-left-color: var(--primary-color); font-weight: 600;
+        }
+        .sidebar-item .nav-icon { font-size: 1.1em; width: 22px; text-align: center; }
+        .sidebar-item .nav-badge {
+            background: #e74c3c; color: white; border-radius: 10px; padding: 1px 7px;
+            font-size: 0.7em; font-weight: bold; margin-left: auto;
+        }
+        .sidebar-divider { height: 1px; background: rgba(255,255,255,0.08); margin: 8px 16px; }
+        .sidebar-bottom { padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.06); }
+        .sidebar-action-btn {
+            display: block; width: 100%; padding: 9px 12px; margin-bottom: 6px;
+            border: none; border-radius: 6px; cursor: pointer; font-size: 0.85em;
+            text-align: left; transition: opacity 0.2s;
+        }
+        .sidebar-action-btn:hover { opacity: 0.85; }
+        .sidebar-danger-btn { background: #dc3545; color: white; }
+        .sidebar-warning-btn { background: #e67e22; color: white; }
+
+        /* ─── Main Content ─── */
+        .main-content { margin-left: 220px; margin-top: 56px; padding: 24px; min-height: calc(100vh - 56px - 48px); }
+
+        /* ─── Footer ─── */
+        .app-footer {
+            margin-left: 220px; padding: 14px 24px; text-align: center;
+            font-size: 0.8em; color: var(--secondary-color);
+            border-top: 1px solid var(--section-border);
+        }
+
+        /* ─── Content Styles ─── */
         h1, h2 { color: var(--primary-color); }
-        h3 { color: var(--secondary-color); border-bottom: 1px solid var(--section-border); padding-bottom: 10px; margin-top: 20px;}
-        .section { margin-bottom: 20px; background-color: var(--section-bg); padding: 20px; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+        h3 { color: var(--secondary-color); border-bottom: 1px solid var(--section-border); padding-bottom: 10px; margin-top: 20px; }
+        .section { margin-bottom: 20px; background-color: var(--section-bg); padding: 20px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08); }
         ul { list-style-type: none; padding: 0; }
         li { background-color: var(--list-item-bg); margin-bottom: 8px; padding: 12px; border-radius: 6px; }
         pre { background-color: var(--pre-bg); padding: 10px; border-radius: 6px; overflow-x: auto; border: 1px solid var(--pre-border); }
-        
-        .tab-nav { overflow: hidden; border-bottom: 1px solid var(--section-border); margin-bottom: 20px; }
-        .tab-nav button { background-color: inherit; float: left; border: none; outline: none; cursor: pointer; padding: 14px 16px; transition: 0.3s; font-size: 17px; color: var(--text-color); }
-        .tab-nav button:hover { background-color: var(--list-item-bg); }
-        .tab-nav button.active { background-color: var(--primary-color); color: white; }
         .tab-content { display: none; }
         .badge { background-color: #e74c3c; color: white; border-radius: 50%; padding: 2px 7px; font-size: 12px; font-weight: bold; margin-left: 5px; animation: badge-pulse 1.5s infinite; }
         @keyframes badge-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
-        
+
         input[type="text"], input[type="password"], input[type="number"], select, textarea {
             width: 95%; padding: 8px; margin-top: 5px; border: 1px solid var(--section-border); border-radius: 6px; font-size: 1em;
-            background-color: var(--list-item-bg);
-            color: var(--text-color);
+            background-color: var(--list-item-bg); color: var(--text-color);
         }
         button { background-color: var(--primary-color); color: white; padding: 10px 15px; border: none; border-radius: 6px; cursor: pointer; font-size: 1em; transition: background-color 0.3s; }
         button:hover { background-color: var(--button-hover-color); }
@@ -185,69 +201,79 @@
         button.approve-btn:hover { background-color: var(--approve-hover); }
         button.deny-btn { background-color: var(--deny-bg); }
         button.deny-btn:hover { background-color: var(--deny-hover); }
-        .agent-status-indicator {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            margin-left: 5px;
-            vertical-align: middle;
-        }
+        .agent-status-indicator { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-left: 5px; vertical-align: middle; }
         .agent-status-indicator.active { background-color: var(--active-status); }
         .agent-status-indicator.inactive-recent { background-color: var(--inactive-recent-status); }
         .agent-status-indicator.inactive-old { background-color: var(--inactive-old-status); }
 
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 15px;
-            color: var(--text-color);
-        }
-        th, td {
-            border: 1px solid var(--table-border-color);
-            padding: 8px;
-            text-align: left;
-        }
-        th {
-            background-color: var(--list-item-bg);
-            color: var(--secondary-color);
-        }
-        tr:nth-child(even) {
-            background-color: var(--list-item-bg);
-        }
-        tfoot strong {
-            color: var(--primary-color);
-        }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; color: var(--text-color); }
+        th, td { border: 1px solid var(--table-border-color); padding: 8px; text-align: left; }
+        th { background-color: var(--list-item-bg); color: var(--secondary-color); }
+        tr:nth-child(even) { background-color: var(--list-item-bg); }
+        tfoot strong { color: var(--primary-color); }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Agent Network Dashboard <span id="version-badge" style="font-size: 0.45em; background: #333; color: #aaa; padding: 3px 10px; border-radius: 12px; vertical-align: middle; cursor: pointer;" onclick="openTab(event, 'settings-tab')" title="Click to check for updates">v...</span></h1>
-        <p>Last updated: <span id="current-time"></span></p>
-        <button id="shutdown-hub-button" class="shutdown-btn">Shutdown Hub</button>
-        <button id="reset-hub-button" class="shutdown-btn" style="background-color: #e67e22;">Reset Hub</button>
-        <button id="theme-switcher-button">Toggle Theme</button>
-        <div id="notification-bell" style="display: inline-block; position: relative; margin-left: 12px; cursor: pointer; vertical-align: middle;" onclick="toggleNotificationPanel()">
-            <span style="font-size: 1.4em;">&#128276;</span>
-            <span id="notif-badge" style="display:none; position: absolute; top: -4px; right: -6px; background: #e74c3c; color: white; border-radius: 50%; font-size: 0.65em; padding: 2px 6px; font-weight: bold;">0</span>
+    <!-- ─── Top Header ─── -->
+    <header class="top-header">
+        <div class="header-left">
+            <span class="app-logo"><span class="app-logo-accent">FulMen</span> Agent Network</span>
+            <span id="version-badge" title="Click to check for updates">v...</span>
         </div>
-        <div id="notification-panel" style="display: none; position: absolute; top: 60px; right: 20px; width: 380px; max-height: 400px; overflow-y: auto; background: var(--section-bg); border: 1px solid var(--section-border); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.3); z-index: 100; padding: 12px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                <strong>Notifications</strong>
-                <button type="button" onclick="markNotificationsRead()" style="font-size: 0.8em; padding: 4px 10px; cursor: pointer;">Mark all read</button>
+        <div class="header-right">
+            <span class="header-time">Last updated: <span id="current-time"></span></span>
+            <button id="theme-toggle" class="icon-btn" title="Toggle theme">&#9790;</button>
+            <div id="notification-bell" onclick="toggleNotificationPanel()">
+                <span class="bell-icon">&#128276;</span>
+                <span id="notif-badge">0</span>
             </div>
-            <div id="notif-list"><p style="color: #888;">No notifications yet.</p></div>
         </div>
+    </header>
 
-        <div class="tab-nav">
-            <button class="tab-link active" onclick="openTab(event, 'dashboard-tab')">Dashboard</button>
-            <button class="tab-link" id="approvals-tab-btn" onclick="openTab(event, 'approvals-tab')">Pending Approvals <span id="approval-badge" class="badge" style="display:none;">0</span></button>
-            <button class="tab-link" onclick="openTab(event, 'settings-tab')">Admin Settings</button>
-            <button class="tab-link" onclick="openTab(event, 'plugins-tab')">Plugin Management</button>
-            <button class="tab-link" onclick="openTab(event, 'scheduler-tab')">Scheduled Tasks</button>
-            <button class="tab-link" onclick="openTab(event, 'webhooks-tab')">Webhooks</button>
-            <button class="tab-link" onclick="openTab(event, 'workflows-tab')">Workflows</button>
+    <!-- ─── Notification Panel ─── -->
+    <div id="notification-panel">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <strong>Notifications</strong>
+            <button type="button" onclick="markNotificationsRead()" style="font-size: 0.8em; padding: 4px 10px; cursor: pointer;">Mark all read</button>
         </div>
+        <div id="notif-list"><p style="color: #888;">No notifications yet.</p></div>
+    </div>
+
+    <!-- ─── Sidebar ─── -->
+    <nav class="sidebar">
+        <div class="sidebar-menu">
+            <a class="sidebar-item active" data-tab="dashboard-tab">
+                <span class="nav-icon">&#128202;</span> Dashboard
+            </a>
+            <a class="sidebar-item" data-tab="approvals-tab">
+                <span class="nav-icon">&#9989;</span> Approvals
+                <span class="nav-badge" id="approval-badge" style="display:none;">0</span>
+            </a>
+            <a class="sidebar-item" data-tab="settings-tab">
+                <span class="nav-icon">&#9881;</span> Settings
+            </a>
+            <a class="sidebar-item" data-tab="plugins-tab">
+                <span class="nav-icon">&#129513;</span> Plugins
+            </a>
+            <a class="sidebar-item" data-tab="scheduler-tab">
+                <span class="nav-icon">&#9200;</span> Scheduler
+            </a>
+            <a class="sidebar-item" data-tab="webhooks-tab">
+                <span class="nav-icon">&#128279;</span> Webhooks
+            </a>
+            <a class="sidebar-item" data-tab="workflows-tab">
+                <span class="nav-icon">&#128260;</span> Workflows
+            </a>
+        </div>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-bottom">
+            <button id="shutdown-hub-button" class="sidebar-action-btn sidebar-danger-btn">&#9211; Shutdown Hub</button>
+            <button id="reset-hub-button" class="sidebar-action-btn sidebar-warning-btn">&#8635; Reset Hub</button>
+        </div>
+    </nav>
+
+    <!-- ─── Main Content ─── -->
+    <main class="main-content">
 
         <div id="dashboard-tab" class="tab-content" style="display: block;">
             <div class="section">
@@ -696,35 +722,39 @@
             </div>
         </div>
 
-    </div>
+    </main>
+
+    <!-- ─── Footer ─── -->
+    <footer class="app-footer">
+        FulMen Agent Network &middot; <a href="https://mateable.com" target="_blank" style="color: var(--primary-color); text-decoration: none;">mateable.com</a> &middot; <a href="https://github.com/mateable/FulmenAgent" target="_blank" style="color: var(--primary-color); text-decoration: none;">GitHub</a> &middot; 2026
+    </footer>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js"></script>
     <script>
         // --- Utility Functions ---
         function openTab(evt, tabName) {
-            var i, tabcontent, tablinks;
-            tabcontent = document.getElementsByClassName("tab-content");
-            for (i = 0; i < tabcontent.length; i++) {
+            // Hide all tab content
+            var tabcontent = document.getElementsByClassName("tab-content");
+            for (var i = 0; i < tabcontent.length; i++) {
                 tabcontent[i].style.display = "none";
             }
-            tablinks = document.getElementsByClassName("tab-link");
-            for (i = 0; i < tablinks.length; i++) {
-                tablinks[i].className = tablinks[i].className.replace(" active", "");
-            }
+            // Deactivate all sidebar items
+            var sidebarItems = document.querySelectorAll(".sidebar-item");
+            sidebarItems.forEach(function(item) { item.classList.remove("active"); });
+            // Show the selected tab
             document.getElementById(tabName).style.display = "block";
-            evt.currentTarget.className += " active";
-            // Call specific fetch function when a tab is opened
-            if (tabName === 'plugins-tab') {
-                fetchAndDisplayPlugins();
-                fetchAutoInstallDepsStatus(); // NEW: Fetch auto-install deps status
+            // Activate the clicked sidebar item
+            if (evt && evt.currentTarget) {
+                evt.currentTarget.classList.add("active");
+            } else {
+                // Find sidebar item by data-tab
+                var match = document.querySelector('.sidebar-item[data-tab="' + tabName + '"]');
+                if (match) match.classList.add("active");
             }
-            if (tabName === 'settings-tab') {
-                fetchOpenRouterModels();
-            }
-            if (tabName === 'workflows-tab') {
-                fetchAndDisplayWorkflows();
-                fetchAndDisplayWorkflowRuns();
-            }
+            // Tab-specific fetch calls
+            if (tabName === 'plugins-tab') { fetchAndDisplayPlugins(); fetchAutoInstallDepsStatus(); }
+            if (tabName === 'settings-tab') { fetchOpenRouterModels(); }
+            if (tabName === 'workflows-tab') { fetchAndDisplayWorkflows(); fetchAndDisplayWorkflowRuns(); }
         }
 
         function updateTime() {
@@ -1530,19 +1560,21 @@
                 if (pendingCount > 0) {
                     badge.textContent = pendingCount;
                     badge.style.display = 'inline';
-                    // Flash the tab button if new approvals arrived
+                    // Flash the sidebar item if new approvals arrived
                     if (pendingCount > _prevPendingCount) {
-                        const tabBtn = document.getElementById('approvals-tab-btn');
-                        tabBtn.style.transition = 'none';
-                        tabBtn.style.backgroundColor = '#e74c3c';
-                        tabBtn.style.color = 'white';
-                        setTimeout(() => {
-                            tabBtn.style.transition = '0.5s';
-                            if (!tabBtn.classList.contains('active')) {
-                                tabBtn.style.backgroundColor = '';
-                                tabBtn.style.color = '';
-                            }
-                        }, 2000);
+                        const sidebarBtn = document.querySelector('.sidebar-item[data-tab="approvals-tab"]');
+                        if (sidebarBtn) {
+                            sidebarBtn.style.transition = 'none';
+                            sidebarBtn.style.backgroundColor = '#e74c3c';
+                            sidebarBtn.style.color = 'white';
+                            setTimeout(() => {
+                                sidebarBtn.style.transition = '0.5s';
+                                if (!sidebarBtn.classList.contains('active')) {
+                                    sidebarBtn.style.backgroundColor = '';
+                                    sidebarBtn.style.color = '';
+                                }
+                            }, 2000);
+                        }
                     }
                 } else {
                     badge.style.display = 'none';
@@ -2043,6 +2075,12 @@
             document.body.classList.remove('light-theme', 'dark-theme');
             document.body.classList.add(theme + '-theme');
             localStorage.setItem('theme', theme);
+            // Update sun/moon icon
+            const btn = document.getElementById('theme-toggle');
+            if (btn) {
+                btn.innerHTML = theme === 'dark' ? '&#9788;' : '&#9790;';  // sun in dark mode, moon in light mode
+                btn.title = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+            }
         }
 
         function toggleTheme() {
@@ -2056,7 +2094,20 @@
             // Apply theme on load
             const savedTheme = localStorage.getItem('theme') || 'light';
             applyTheme(savedTheme);
-            document.getElementById('theme-switcher-button').addEventListener('click', toggleTheme);
+            document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+
+            // Sidebar navigation
+            document.querySelectorAll('.sidebar-item[data-tab]').forEach(function(item) {
+                item.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    openTab(e, this.dataset.tab);
+                });
+            });
+
+            // Version badge click goes to settings
+            document.getElementById('version-badge').addEventListener('click', function() {
+                openTab(null, 'settings-tab');
+            });
 
             updateTime();
             setInterval(updateTime, 1000);
@@ -2100,8 +2151,8 @@
             document.getElementById('create-webhook-form').addEventListener('submit', handleCreateWebhook);
             document.getElementById('broadcast-form').addEventListener('submit', handleBroadcast);
 
-            // Open the default tab
-            document.getElementsByClassName("tab-link")[0].click();
+            // Open the default tab (Dashboard)
+            openTab(null, 'dashboard-tab');
         });
 
         // --- Handlers for main buttons (outside fetch functions) ---
