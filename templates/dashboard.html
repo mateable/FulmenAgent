@@ -246,6 +246,7 @@
             <button class="tab-link" onclick="openTab(event, 'plugins-tab')">Plugin Management</button>
             <button class="tab-link" onclick="openTab(event, 'scheduler-tab')">Scheduled Tasks</button>
             <button class="tab-link" onclick="openTab(event, 'webhooks-tab')">Webhooks</button>
+            <button class="tab-link" onclick="openTab(event, 'workflows-tab')">Workflows</button>
         </div>
 
         <div id="dashboard-tab" class="tab-content" style="display: block;">
@@ -651,6 +652,50 @@
             </div>
         </div>
 
+        <!-- ─── Workflows Tab ─── -->
+        <div id="workflows-tab" class="tab-content">
+            <div class="section">
+                <h2>Workflow Engine</h2>
+                <p style="color: #aaa;">Chain agents together — output from one agent flows as input to the next. Add approval gates, failure recovery, and template variables.</p>
+
+                <!-- Workflow Builder -->
+                <div id="workflow-builder" style="margin-top: 15px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e;">
+                    <input type="hidden" id="workflow-edit-id" value="">
+                    <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 15px; margin-bottom: 15px;">
+                        <div>
+                            <label for="workflow-name">Workflow Name:</label>
+                            <input type="text" id="workflow-name" placeholder="e.g., Research & Summarize" style="width: 100%; padding: 6px;" required>
+                        </div>
+                        <div>
+                            <label for="workflow-description">Description:</label>
+                            <input type="text" id="workflow-description" placeholder="Optional description" style="width: 100%; padding: 6px;">
+                        </div>
+                    </div>
+
+                    <h4 style="margin-bottom: 10px;">Steps</h4>
+                    <div id="workflow-steps-container"></div>
+                    <button onclick="addWorkflowStep()" style="padding: 6px 16px; cursor: pointer; margin-top: 10px;">+ Add Step</button>
+
+                    <p style="color: #888; font-size: 0.85em; margin-top: 10px;">
+                        {% raw %}Template variables: <code>{{trigger_input}}</code> for the workflow input. <code>{{step1.output}}</code>, <code>{{step2.output}}</code> etc. for previous step outputs.{% endraw %}
+                    </p>
+
+                    <div style="margin-top: 15px; display: flex; gap: 10px;">
+                        <button onclick="handleSaveWorkflow()" style="padding: 8px 20px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 4px;">Save Workflow</button>
+                        <button onclick="clearWorkflowBuilder()" style="padding: 8px 20px; cursor: pointer;">Clear</button>
+                    </div>
+                </div>
+
+                <!-- Saved Workflows -->
+                <h3 style="margin-top: 25px;">Saved Workflows</h3>
+                <div id="workflows-list"><p style="color: #888;">Loading...</p></div>
+
+                <!-- Workflow Runs -->
+                <h3 style="margin-top: 25px;">Workflow Runs</h3>
+                <div id="workflow-runs-list"><p style="color: #888;">Loading...</p></div>
+            </div>
+        </div>
+
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js"></script>
@@ -675,6 +720,10 @@
             }
             if (tabName === 'settings-tab') {
                 fetchOpenRouterModels();
+            }
+            if (tabName === 'workflows-tab') {
+                fetchAndDisplayWorkflows();
+                fetchAndDisplayWorkflowRuns();
             }
         }
 
@@ -2026,6 +2075,7 @@
             fetchNotifications();
             fetchAndDisplayWebhooks();
             fetchAgentTemplates();
+            fetchAndDisplayWorkflows();
 
             // Polling for dynamic data
             setInterval(fetchAndDisplayAgents, 10000);
@@ -2038,6 +2088,7 @@
             setInterval(fetchAndDisplayScheduledTasks, 10000);
             setInterval(fetchNotifications, 5000);
             setInterval(fetchAndDisplayWebhooks, 10000);
+            setInterval(fetchAndDisplayWorkflowRuns, 5000);
 
             // Attach form submission handlers and other buttons
             document.getElementById('shutdown-hub-button').addEventListener('click', handleShutdownHub);
@@ -2132,5 +2183,378 @@
                 alert('Failed to upload plugin.');
             }
         }
+
+        // ─── Workflow Engine Functions ───
+
+        let _workflowStepCounter = 0;
+
+        function addWorkflowStep(data) {
+            _workflowStepCounter++;
+            const container = document.getElementById('workflow-steps-container');
+            const stepDiv = document.createElement('div');
+            stepDiv.className = 'workflow-step-row';
+            stepDiv.dataset.stepIndex = _workflowStepCounter;
+            stepDiv.style.cssText = 'padding: 12px; border: 1px solid #555; border-radius: 6px; margin-bottom: 10px; background: #16213e;';
+
+            const stepId = (data && data.id) || `step${_workflowStepCounter}`;
+            const stepName = (data && data.name) || '';
+            const agentName = (data && data.agent_name) || '';
+            const taskTemplate = (data && data.task_template) || '';
+            const nextStep = (data && data.next_step) || '';
+            const onFailure = (data && data.on_failure) || '';
+            const waitApproval = (data && data.wait_for_approval) ? 'checked' : '';
+
+            stepDiv.innerHTML = `
+                <div style="display: grid; grid-template-columns: 100px 1fr 1fr; gap: 10px; margin-bottom: 8px;">
+                    <div>
+                        <label style="font-size: 0.85em;">Step ID</label>
+                        <input type="text" class="wf-step-id" value="${stepId}" style="width: 100%; padding: 4px;" readonly>
+                    </div>
+                    <div>
+                        <label style="font-size: 0.85em;">Step Name</label>
+                        <input type="text" class="wf-step-name" value="${stepName}" placeholder="e.g., Research" style="width: 100%; padding: 4px;">
+                    </div>
+                    <div>
+                        <label style="font-size: 0.85em;">Agent</label>
+                        <select class="wf-step-agent" style="width: 100%; padding: 4px;">
+                            <option value="">-- Select Agent --</option>
+                        </select>
+                    </div>
+                </div>
+                <div style="margin-bottom: 8px;">
+                    <label style="font-size: 0.85em;">Task Template</label>
+                    <textarea class="wf-step-template" placeholder="e.g., Research the following: &#123;&#123;trigger_input&#125;&#125;" style="width: 100%; padding: 4px; min-height: 50px; resize: vertical;">${taskTemplate}</textarea>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 10px; align-items: end;">
+                    <div>
+                        <label style="font-size: 0.85em;">Next Step (ID or empty for end)</label>
+                        <input type="text" class="wf-step-next" value="${nextStep}" placeholder="e.g., step2 or leave empty" style="width: 100%; padding: 4px;">
+                    </div>
+                    <div>
+                        <label style="font-size: 0.85em;">On Failure (step ID or empty)</label>
+                        <input type="text" class="wf-step-onfailure" value="${onFailure}" placeholder="e.g., step1" style="width: 100%; padding: 4px;">
+                    </div>
+                    <div style="text-align: center;">
+                        <label style="font-size: 0.85em;">Approval</label><br>
+                        <input type="checkbox" class="wf-step-approval" ${waitApproval}>
+                    </div>
+                    <div>
+                        <button onclick="this.closest('.workflow-step-row').remove()" style="padding: 4px 12px; cursor: pointer; background: #dc3545; color: white; border: none; border-radius: 4px;">Remove</button>
+                    </div>
+                </div>
+            `;
+            container.appendChild(stepDiv);
+
+            // Populate agent dropdown
+            const agentSelect = stepDiv.querySelector('.wf-step-agent');
+            if (agentSelect) {
+                _populateWorkflowAgentDropdown(agentSelect, agentName);
+            }
+        }
+
+        async function _populateWorkflowAgentDropdown(selectEl, selectedAgent) {
+            try {
+                const resp = await fetch('/api/agents');
+                const agents = await resp.json();
+                const agentNames = Object.keys(agents);
+                agentNames.forEach(name => {
+                    const opt = document.createElement('option');
+                    opt.value = name;
+                    opt.textContent = name;
+                    if (name === selectedAgent) opt.selected = true;
+                    selectEl.appendChild(opt);
+                });
+            } catch (e) {
+                console.error('Error populating agent dropdown:', e);
+            }
+        }
+
+        function clearWorkflowBuilder() {
+            document.getElementById('workflow-edit-id').value = '';
+            document.getElementById('workflow-name').value = '';
+            document.getElementById('workflow-description').value = '';
+            document.getElementById('workflow-steps-container').innerHTML = '';
+            _workflowStepCounter = 0;
+        }
+
+        function _collectWorkflowSteps() {
+            const rows = document.querySelectorAll('.workflow-step-row');
+            const steps = [];
+            rows.forEach(row => {
+                steps.push({
+                    id: row.querySelector('.wf-step-id').value.trim(),
+                    name: row.querySelector('.wf-step-name').value.trim(),
+                    agent_name: row.querySelector('.wf-step-agent').value,
+                    task_template: row.querySelector('.wf-step-template').value,
+                    next_step: row.querySelector('.wf-step-next').value.trim() || null,
+                    on_failure: row.querySelector('.wf-step-onfailure').value.trim() || null,
+                    wait_for_approval: row.querySelector('.wf-step-approval').checked
+                });
+            });
+            return steps;
+        }
+
+        async function handleSaveWorkflow() {
+            const name = document.getElementById('workflow-name').value.trim();
+            if (!name) { alert('Please enter a workflow name.'); return; }
+
+            const steps = _collectWorkflowSteps();
+            if (steps.length === 0) { alert('Please add at least one step.'); return; }
+
+            const editId = document.getElementById('workflow-edit-id').value;
+            const payload = {
+                name: name,
+                description: document.getElementById('workflow-description').value.trim(),
+                steps: steps
+            };
+
+            try {
+                let resp;
+                if (editId) {
+                    resp = await fetch(`/api/workflows/${editId}`, {
+                        method: 'PUT',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    });
+                } else {
+                    resp = await fetch('/api/workflows', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    });
+                }
+                const result = await resp.json();
+                if (result.status === 'success') {
+                    clearWorkflowBuilder();
+                    fetchAndDisplayWorkflows();
+                } else {
+                    alert(result.message || 'Error saving workflow.');
+                }
+            } catch (e) {
+                console.error('Error saving workflow:', e);
+                alert('Failed to save workflow.');
+            }
+        }
+
+        async function fetchAndDisplayWorkflows() {
+            try {
+                const resp = await fetch('/api/workflows');
+                const data = await resp.json();
+                const workflows = data.workflows || [];
+                const container = document.getElementById('workflows-list');
+
+                if (workflows.length === 0) {
+                    container.innerHTML = '<p style="color: #888;">No workflows saved yet. Create one above.</p>';
+                    return;
+                }
+
+                let html = `<table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                    <thead><tr style="border-bottom: 2px solid #555;">
+                        <th style="text-align: left; padding: 8px;">Name</th>
+                        <th style="text-align: left; padding: 8px;">Description</th>
+                        <th style="text-align: center; padding: 8px;">Steps</th>
+                        <th style="text-align: center; padding: 8px;">Enabled</th>
+                        <th style="text-align: center; padding: 8px;">Actions</th>
+                    </tr></thead><tbody>`;
+
+                workflows.forEach(w => {
+                    const enabledBadge = w.enabled ?
+                        '<span style="color: #28a745;">Enabled</span>' :
+                        '<span style="color: #dc3545;">Disabled</span>';
+                    html += `<tr style="border-bottom: 1px solid #444;">
+                        <td style="padding: 8px; font-weight: bold;">${w.name}</td>
+                        <td style="padding: 8px; color: #aaa;">${w.description || '—'}</td>
+                        <td style="padding: 8px; text-align: center;">${w.steps ? w.steps.length : 0}</td>
+                        <td style="padding: 8px; text-align: center;">${enabledBadge}</td>
+                        <td style="padding: 8px; text-align: center;">
+                            <button onclick="runWorkflow('${w.id}')" style="padding: 4px 10px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 3px; margin: 2px;">Run</button>
+                            <button onclick="editWorkflow('${w.id}')" style="padding: 4px 10px; cursor: pointer; margin: 2px;">Edit</button>
+                            <button onclick="toggleWorkflow('${w.id}')" style="padding: 4px 10px; cursor: pointer; margin: 2px;">${w.enabled ? 'Disable' : 'Enable'}</button>
+                            <button onclick="deleteWorkflow('${w.id}')" style="padding: 4px 10px; cursor: pointer; background: #dc3545; color: white; border: none; border-radius: 3px; margin: 2px;">Delete</button>
+                        </td>
+                    </tr>`;
+                });
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            } catch (e) {
+                console.error('Error fetching workflows:', e);
+            }
+        }
+
+        async function runWorkflow(workflowId) {
+            const input = prompt('Enter trigger input for this workflow (or leave empty):');
+            if (input === null) return; // User cancelled
+            try {
+                const resp = await fetch(`/api/workflows/${workflowId}/run`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({input: input})
+                });
+                const result = await resp.json();
+                if (result.status === 'success') {
+                    fetchAndDisplayWorkflowRuns();
+                } else {
+                    alert(result.message || 'Error starting workflow.');
+                }
+            } catch (e) {
+                console.error('Error running workflow:', e);
+                alert('Failed to start workflow.');
+            }
+        }
+
+        async function editWorkflow(workflowId) {
+            try {
+                const resp = await fetch(`/api/workflows/${workflowId}`);
+                const data = await resp.json();
+                if (data.status !== 'success') { alert('Workflow not found.'); return; }
+                const w = data.workflow;
+
+                clearWorkflowBuilder();
+                document.getElementById('workflow-edit-id').value = w.id;
+                document.getElementById('workflow-name').value = w.name;
+                document.getElementById('workflow-description').value = w.description || '';
+
+                if (w.steps) {
+                    w.steps.forEach(step => addWorkflowStep(step));
+                }
+
+                // Scroll to builder
+                document.getElementById('workflow-builder').scrollIntoView({behavior: 'smooth'});
+            } catch (e) {
+                console.error('Error loading workflow for edit:', e);
+            }
+        }
+
+        async function deleteWorkflow(workflowId) {
+            if (!confirm('Delete this workflow?')) return;
+            try {
+                await fetch(`/api/workflows/${workflowId}`, {method: 'DELETE'});
+                fetchAndDisplayWorkflows();
+            } catch (e) {
+                console.error('Error deleting workflow:', e);
+            }
+        }
+
+        async function toggleWorkflow(workflowId) {
+            try {
+                await fetch(`/api/workflows/${workflowId}/toggle`, {method: 'POST'});
+                fetchAndDisplayWorkflows();
+            } catch (e) {
+                console.error('Error toggling workflow:', e);
+            }
+        }
+
+        async function fetchAndDisplayWorkflowRuns() {
+            try {
+                const resp = await fetch('/api/workflow_runs');
+                const data = await resp.json();
+                const runs = data.runs || [];
+                const container = document.getElementById('workflow-runs-list');
+
+                if (runs.length === 0) {
+                    container.innerHTML = '<p style="color: #888;">No workflow runs yet. Run a workflow to see results here.</p>';
+                    return;
+                }
+
+                let html = '';
+                runs.forEach(run => {
+                    const statusColors = {
+                        'running': '#17a2b8',
+                        'completed': '#28a745',
+                        'failed': '#dc3545',
+                        'paused': '#ffc107',
+                        'cancelled': '#6c757d'
+                    };
+                    const statusColor = statusColors[run.status] || '#888';
+                    const startedStr = run.started_at ? moment(run.started_at * 1000).fromNow() : '—';
+                    const completedStr = run.completed_at ? moment(run.completed_at * 1000).fromNow() : '—';
+                    const triggerPreview = run.trigger_input ? (run.trigger_input.length > 80 ? run.trigger_input.substring(0, 80) + '...' : run.trigger_input) : '(no input)';
+
+                    html += `<div style="border: 1px solid #444; border-radius: 8px; padding: 12px; margin-bottom: 10px; background: #1a1a2e;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div>
+                                <strong>${run.workflow_name}</strong>
+                                <span style="background: ${statusColor}; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.8em; margin-left: 8px;">${run.status.toUpperCase()}</span>
+                            </div>
+                            <div style="font-size: 0.85em; color: #aaa;">
+                                Started ${startedStr}
+                                ${run.completed_at ? ' | Ended ' + completedStr : ''}
+                            </div>
+                        </div>
+                        <div style="font-size: 0.85em; color: #aaa; margin-bottom: 8px;">Input: ${triggerPreview}</div>
+                        ${_renderStepTimeline(run)}
+                        <div style="margin-top: 8px;">
+                            ${run.status === 'paused' ? `<button onclick="approveWorkflowStep('${run.run_id}')" style="padding: 4px 12px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 3px; margin-right: 5px;">Approve & Continue</button>` : ''}
+                            ${(run.status === 'running' || run.status === 'paused') ? `<button onclick="cancelWorkflowRun('${run.run_id}')" style="padding: 4px 12px; cursor: pointer; background: #dc3545; color: white; border: none; border-radius: 3px;">Cancel</button>` : ''}
+                        </div>
+                    </div>`;
+                });
+                container.innerHTML = html;
+            } catch (e) {
+                console.error('Error fetching workflow runs:', e);
+            }
+        }
+
+        function _renderStepTimeline(run) {
+            const stepResults = run.step_results || {};
+            const stepIds = Object.keys(stepResults);
+            if (stepIds.length === 0) return '<p style="color: #888; font-size: 0.85em;">No steps executed yet.</p>';
+
+            let html = '<div style="border-left: 2px solid #555; margin-left: 10px; padding-left: 15px;">';
+            stepIds.forEach(sid => {
+                const sr = stepResults[sid];
+                const dotColors = {
+                    'completed': '#28a745',
+                    'running': '#17a2b8',
+                    'failed': '#dc3545',
+                    'waiting_approval': '#ffc107',
+                    'pending': '#6c757d'
+                };
+                const dotColor = dotColors[sr.status] || '#888';
+                const timeStr = sr.started_at ? moment(sr.started_at * 1000).format('HH:mm:ss') : '—';
+                const outputPreview = sr.output ? (sr.output.length > 120 ? sr.output.substring(0, 120) + '...' : sr.output) : '';
+
+                html += `<div style="position: relative; margin-bottom: 12px;">
+                    <div style="position: absolute; left: -21px; top: 4px; width: 10px; height: 10px; border-radius: 50%; background: ${dotColor};"></div>
+                    <div style="font-size: 0.9em;">
+                        <strong>${sid}</strong> <span style="color: #aaa;">— ${sr.agent_name || '?'}</span>
+                        <span style="color: ${dotColor}; margin-left: 8px; font-size: 0.85em;">${sr.status}</span>
+                        <span style="color: #666; margin-left: 8px; font-size: 0.8em;">${timeStr}</span>
+                    </div>
+                    ${outputPreview ? `<div style="font-size: 0.8em; color: #aaa; margin-top: 4px; padding: 6px; background: #0d1117; border-radius: 4px; white-space: pre-wrap; word-break: break-word;">${outputPreview}</div>` : ''}
+                </div>`;
+            });
+            html += '</div>';
+            return html;
+        }
+
+        async function approveWorkflowStep(runId) {
+            try {
+                const resp = await fetch(`/api/workflow_runs/${runId}/approve`, {method: 'POST'});
+                const result = await resp.json();
+                if (result.status === 'success') {
+                    fetchAndDisplayWorkflowRuns();
+                } else {
+                    alert(result.message || 'Error approving step.');
+                }
+            } catch (e) {
+                console.error('Error approving workflow step:', e);
+            }
+        }
+
+        async function cancelWorkflowRun(runId) {
+            if (!confirm('Cancel this workflow run?')) return;
+            try {
+                const resp = await fetch(`/api/workflow_runs/${runId}/cancel`, {method: 'POST'});
+                const result = await resp.json();
+                if (result.status !== 'success') {
+                    alert(result.message || 'Error cancelling run.');
+                }
+                fetchAndDisplayWorkflowRuns();
+            } catch (e) {
+                console.error('Error cancelling workflow run:', e);
+            }
+        }
+
     </script>
 </html>

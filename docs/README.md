@@ -9,6 +9,7 @@ Setup guides and reference docs for all plugins and integrations.
 | Guide | What It Covers |
 |-------|---------------|
 | [Features Guide](features-guide.md) | Agent Templates, Webhooks, Notifications, Broadcast, Scheduled Tasks |
+| [Workflow Engine](workflow-guide.md) | Agent chaining, template variables, approval gates, failure recovery |
 
 ## Plugin Guides
 

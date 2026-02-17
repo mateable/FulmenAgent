@@ -58,7 +58,9 @@ hub_memory = {
     "scheduled_tasks": [], # Scheduled/cron tasks (persisted to scheduled_tasks.json)
     "webhooks": {},  # {"<id>": {"id", "name", "agent_name", "secret", "created_at", "enabled", "last_triggered", "trigger_count"}}
     "notifications": [],  # [{"id", "type", "message", "timestamp", "read"}] — capped at 50
-    "agent_templates": []  # Persisted to agent_templates.json
+    "agent_templates": [],  # Persisted to agent_templates.json
+    "workflows": [],        # Persisted to workflows.json
+    "workflow_runs": []     # Persisted to workflow_runs.json
 }
 
 launched_agent_processes = {}
@@ -261,6 +263,249 @@ def _load_agent_templates():
 
 _load_agent_templates()
 
+# ─── Workflow Engine ───
+
+WORKFLOWS_FILE = os.path.join(os.path.dirname(__file__), "workflows.json")
+WORKFLOW_RUNS_FILE = os.path.join(os.path.dirname(__file__), "workflow_runs.json")
+
+def _save_workflows():
+    try:
+        with open(WORKFLOWS_FILE, "w") as f:
+            json.dump(hub_memory["workflows"], f, indent=2)
+    except Exception as e:
+        logger.error(f"[Workflows] Error saving: {e}")
+
+def _load_workflows():
+    if os.path.exists(WORKFLOWS_FILE):
+        try:
+            with open(WORKFLOWS_FILE, "r") as f:
+                hub_memory["workflows"] = json.load(f)
+            logger.info(f"[Workflows] Loaded {len(hub_memory['workflows'])} workflow(s) from disk.")
+        except Exception as e:
+            logger.error(f"[Workflows] Error loading: {e}")
+
+def _save_workflow_runs():
+    try:
+        with open(WORKFLOW_RUNS_FILE, "w") as f:
+            json.dump(hub_memory["workflow_runs"], f, indent=2)
+    except Exception as e:
+        logger.error(f"[Workflow Runs] Error saving: {e}")
+
+def _load_workflow_runs():
+    if os.path.exists(WORKFLOW_RUNS_FILE):
+        try:
+            with open(WORKFLOW_RUNS_FILE, "r") as f:
+                hub_memory["workflow_runs"] = json.load(f)
+            logger.info(f"[Workflow Runs] Loaded {len(hub_memory['workflow_runs'])} run(s) from disk.")
+        except Exception as e:
+            logger.error(f"[Workflow Runs] Error loading: {e}")
+
+_load_workflows()
+_load_workflow_runs()
+
+import re as _re
+
+def _resolve_template(template_str, trigger_input, step_results):
+    """Replace {{trigger_input}} and {{stepX.output}} with actual values."""
+    result = template_str.replace("{{trigger_input}}", str(trigger_input or ""))
+    # Replace {{stepX.output}} patterns
+    def _step_replacer(match):
+        step_id = match.group(1)
+        if step_id in step_results and step_results[step_id].get("output"):
+            return str(step_results[step_id]["output"])
+        return match.group(0)  # Leave placeholder if no output yet
+    result = _re.sub(r"\{\{(\w+)\.output\}\}", _step_replacer, result)
+    return result
+
+def _advance_workflow(run_id):
+    """Advance a workflow run to its next step."""
+    run = None
+    for r in hub_memory["workflow_runs"]:
+        if r["run_id"] == run_id:
+            run = r
+            break
+    if not run or run["status"] not in ("running", "paused"):
+        return
+
+    # Find workflow definition
+    workflow = None
+    for w in hub_memory["workflows"]:
+        if w["id"] == run["workflow_id"]:
+            workflow = w
+            break
+    if not workflow:
+        run["status"] = "failed"
+        run["completed_at"] = time.time()
+        _save_workflow_runs()
+        _add_notification("workflow_failed", f"Workflow '{run['workflow_name']}' failed — workflow definition not found")
+        return
+
+    current_step_id = run["current_step_id"]
+    # Find current step definition
+    current_step_def = None
+    for s in workflow["steps"]:
+        if s["id"] == current_step_id:
+            current_step_def = s
+            break
+
+    if not current_step_def:
+        run["status"] = "failed"
+        run["completed_at"] = time.time()
+        _save_workflow_runs()
+        _add_notification("workflow_failed", f"Workflow '{run['workflow_name']}' failed — step '{current_step_id}' not found")
+        return
+
+    step_result = run["step_results"].get(current_step_id, {})
+    step_status = step_result.get("status", "pending")
+
+    if step_status == "completed":
+        next_step_id = current_step_def.get("next_step")
+        if not next_step_id:
+            # Workflow is done
+            run["status"] = "completed"
+            run["completed_at"] = time.time()
+            _save_workflow_runs()
+            _add_notification("workflow_completed", f"Workflow '{run['workflow_name']}' completed successfully")
+            return
+
+        # Find next step definition
+        next_step_def = None
+        for s in workflow["steps"]:
+            if s["id"] == next_step_id:
+                next_step_def = s
+                break
+        if not next_step_def:
+            run["status"] = "failed"
+            run["completed_at"] = time.time()
+            _save_workflow_runs()
+            _add_notification("workflow_failed", f"Workflow '{run['workflow_name']}' failed — next step '{next_step_id}' not found")
+            return
+
+        # Check if next step needs approval before running
+        if next_step_def.get("wait_for_approval"):
+            run["status"] = "paused"
+            run["current_step_id"] = next_step_id
+            run["step_results"][next_step_id] = {
+                "status": "waiting_approval",
+                "agent_name": next_step_def["agent_name"],
+                "started_at": None,
+                "completed_at": None,
+                "output": None
+            }
+            _save_workflow_runs()
+            _add_notification("workflow_paused", f"Workflow '{run['workflow_name']}' paused — awaiting approval for step '{next_step_def['name']}'")
+            return
+
+        # Execute next step
+        _execute_workflow_step(run, workflow, next_step_def)
+
+    elif step_status == "failed":
+        on_failure = current_step_def.get("on_failure")
+        if on_failure:
+            # Jump to the on_failure step
+            fail_step_def = None
+            for s in workflow["steps"]:
+                if s["id"] == on_failure:
+                    fail_step_def = s
+                    break
+            if fail_step_def:
+                _execute_workflow_step(run, workflow, fail_step_def)
+                return
+        # No recovery — workflow failed
+        run["status"] = "failed"
+        run["completed_at"] = time.time()
+        _save_workflow_runs()
+        _add_notification("workflow_failed", f"Workflow '{run['workflow_name']}' failed at step '{current_step_def['name']}'")
+
+def _execute_workflow_step(run, workflow, step_def):
+    """Send a task to the agent for a workflow step."""
+    agent_name = step_def["agent_name"]
+    step_id = step_def["id"]
+
+    # Check if agent is active
+    if agent_name not in hub_memory["active_agents"]:
+        run["status"] = "failed"
+        run["current_step_id"] = step_id
+        run["step_results"][step_id] = {
+            "status": "failed",
+            "agent_name": agent_name,
+            "started_at": time.time(),
+            "completed_at": time.time(),
+            "output": f"Agent '{agent_name}' is not running"
+        }
+        run["completed_at"] = time.time()
+        _save_workflow_runs()
+        _add_notification("workflow_failed", f"Workflow '{run['workflow_name']}' failed — agent '{agent_name}' is not running")
+        return
+
+    # Resolve template variables
+    task_message = _resolve_template(step_def.get("task_template", ""), run.get("trigger_input", ""), run.get("step_results", {}))
+
+    # Update run state
+    run["status"] = "running"
+    run["current_step_id"] = step_id
+    run["step_results"][step_id] = {
+        "status": "running",
+        "agent_name": agent_name,
+        "started_at": time.time(),
+        "completed_at": None,
+        "output": None
+    }
+    _save_workflow_runs()
+
+    # Send task to agent queue
+    if agent_name not in hub_memory["agent_message_queues"]:
+        hub_memory["agent_message_queues"][agent_name] = []
+    hub_memory["agent_message_queues"][agent_name].append({
+        "sender": "workflow",
+        "message": task_message
+    })
+    logger.info(f"[Workflow] Sent task to agent '{agent_name}' for step '{step_def['name']}' in workflow '{run['workflow_name']}'")
+
+def _check_workflow_step_completion(agent_name, message):
+    """Check if an agent's message completes a workflow step."""
+    for run in hub_memory["workflow_runs"]:
+        if run["status"] != "running":
+            continue
+        step_id = run.get("current_step_id")
+        if not step_id:
+            continue
+        step_result = run["step_results"].get(step_id, {})
+        if step_result.get("status") == "running" and step_result.get("agent_name") == agent_name:
+            # This agent's output completes this workflow step
+            step_result["status"] = "completed"
+            step_result["completed_at"] = time.time()
+            step_result["output"] = message
+            _save_workflow_runs()
+            step_name = step_id
+            # Get step name from workflow def
+            for w in hub_memory["workflows"]:
+                if w["id"] == run["workflow_id"]:
+                    for s in w["steps"]:
+                        if s["id"] == step_id:
+                            step_name = s["name"]
+                            break
+                    break
+            _add_notification("workflow_step_completed", f"Workflow '{run['workflow_name']}': step '{step_name}' completed by agent '{agent_name}'")
+            _advance_workflow(run["run_id"])
+            return  # Only match first active run for this agent
+
+def _check_workflow_step_failure(agent_name):
+    """Check if an agent's failure affects a workflow step."""
+    for run in hub_memory["workflow_runs"]:
+        if run["status"] != "running":
+            continue
+        step_id = run.get("current_step_id")
+        if not step_id:
+            continue
+        step_result = run["step_results"].get(step_id, {})
+        if step_result.get("status") == "running" and step_result.get("agent_name") == agent_name:
+            step_result["status"] = "failed"
+            step_result["completed_at"] = time.time()
+            _save_workflow_runs()
+            _advance_workflow(run["run_id"])
+            return
+
 # -------------------- Routes --------------------
 
 @app.route("/")
@@ -376,6 +621,8 @@ def submit_experience():
         if step_result.get("status") == "failed":
             exp_agent = exp.get("agent_name", "unknown")
             _add_notification("task_error", f"Agent '{exp_agent}' encountered an error")
+            # Check if this failure affects a workflow step
+            _check_workflow_step_failure(exp_agent)
 
     logger.debug(f"Received {len(experiences)} experiences.")
     return jsonify({"status": "success", "message": "Experiences submitted."}), 200
@@ -889,6 +1136,8 @@ def receive_user_message():
             "timestamp": time.time()
         })
         logger.info(f"Received message from agent '{agent_name}' for user.")
+        # Check if this completes a workflow step
+        _check_workflow_step_completion(agent_name, message)
         return jsonify({"status": "success", "message": "Message queued for processing."}), 200
     return jsonify({"status": "error", "message": "Invalid message data."}), 400
 
@@ -954,7 +1203,9 @@ def reset_hub():
     }
     hub_memory["per_agent_token_usage"] = {}
     hub_memory["notifications"] = []
-    # Keep global_plugin_preferences, global_auto_install_deps, discovered_plugins, scheduled_tasks, webhooks, agent_templates
+    hub_memory["workflow_runs"] = []
+    _save_workflow_runs()
+    # Keep global_plugin_preferences, global_auto_install_deps, discovered_plugins, scheduled_tasks, webhooks, agent_templates, workflows
 
     logger.info(f"Hub reset complete. Killed {killed} agents, cleared all memory.")
     return jsonify({"status": "success", "message": f"Hub reset. Killed {killed} agent(s), cleared all data."}), 200
@@ -1569,6 +1820,191 @@ def launch_agent():
     except Exception as e:
         logger.error(f"Error launching agent '{agent_name}': {e}")
         return jsonify({"status": "error", "message": f"Failed to launch agent: {e}"}), 500
+
+
+# ─── Workflow API Endpoints ───
+
+@app.route("/api/workflows", methods=["GET"])
+def api_list_workflows():
+    return jsonify({"status": "success", "workflows": hub_memory["workflows"]}), 200
+
+@app.route("/api/workflows", methods=["POST"])
+def api_create_workflow():
+    data = request.json
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"status": "error", "message": "Workflow name is required."}), 400
+    steps = data.get("steps", [])
+    if not steps:
+        return jsonify({"status": "error", "message": "At least one step is required."}), 400
+
+    # Auto-assign step IDs if not provided
+    for i, step in enumerate(steps):
+        if not step.get("id"):
+            step["id"] = f"step{i+1}"
+
+    workflow = {
+        "id": str(uuid.uuid4())[:8],
+        "name": name,
+        "description": data.get("description", ""),
+        "steps": steps,
+        "created_at": time.time(),
+        "enabled": True
+    }
+    hub_memory["workflows"].append(workflow)
+    _save_workflows()
+    logger.info(f"[Workflows] Created workflow '{name}' with {len(steps)} step(s).")
+    return jsonify({"status": "success", "workflow": workflow}), 200
+
+@app.route("/api/workflows/<workflow_id>", methods=["GET"])
+def api_get_workflow(workflow_id):
+    for w in hub_memory["workflows"]:
+        if w["id"] == workflow_id:
+            return jsonify({"status": "success", "workflow": w}), 200
+    return jsonify({"status": "error", "message": "Workflow not found."}), 404
+
+@app.route("/api/workflows/<workflow_id>", methods=["PUT"])
+def api_update_workflow(workflow_id):
+    data = request.json
+    for w in hub_memory["workflows"]:
+        if w["id"] == workflow_id:
+            if data.get("name"):
+                w["name"] = data["name"].strip()
+            if "description" in data:
+                w["description"] = data["description"]
+            if "steps" in data:
+                steps = data["steps"]
+                for i, step in enumerate(steps):
+                    if not step.get("id"):
+                        step["id"] = f"step{i+1}"
+                w["steps"] = steps
+            _save_workflows()
+            return jsonify({"status": "success", "workflow": w}), 200
+    return jsonify({"status": "error", "message": "Workflow not found."}), 404
+
+@app.route("/api/workflows/<workflow_id>", methods=["DELETE"])
+def api_delete_workflow(workflow_id):
+    for i, w in enumerate(hub_memory["workflows"]):
+        if w["id"] == workflow_id:
+            hub_memory["workflows"].pop(i)
+            _save_workflows()
+            return jsonify({"status": "success", "message": "Workflow deleted."}), 200
+    return jsonify({"status": "error", "message": "Workflow not found."}), 404
+
+@app.route("/api/workflows/<workflow_id>/toggle", methods=["POST"])
+def api_toggle_workflow(workflow_id):
+    for w in hub_memory["workflows"]:
+        if w["id"] == workflow_id:
+            w["enabled"] = not w.get("enabled", True)
+            _save_workflows()
+            return jsonify({"status": "success", "enabled": w["enabled"]}), 200
+    return jsonify({"status": "error", "message": "Workflow not found."}), 404
+
+@app.route("/api/workflows/<workflow_id>/run", methods=["POST"])
+def api_run_workflow(workflow_id):
+    data = request.json or {}
+    trigger_input = data.get("input", "")
+
+    workflow = None
+    for w in hub_memory["workflows"]:
+        if w["id"] == workflow_id:
+            workflow = w
+            break
+    if not workflow:
+        return jsonify({"status": "error", "message": "Workflow not found."}), 404
+    if not workflow.get("enabled", True):
+        return jsonify({"status": "error", "message": "Workflow is disabled."}), 400
+    if not workflow.get("steps"):
+        return jsonify({"status": "error", "message": "Workflow has no steps."}), 400
+
+    # Create a new run
+    first_step = workflow["steps"][0]
+    run = {
+        "run_id": str(uuid.uuid4())[:8],
+        "workflow_id": workflow["id"],
+        "workflow_name": workflow["name"],
+        "status": "running",
+        "trigger_input": trigger_input,
+        "started_at": time.time(),
+        "completed_at": None,
+        "current_step_id": first_step["id"],
+        "step_results": {}
+    }
+    hub_memory["workflow_runs"].append(run)
+    _add_notification("workflow_started", f"Workflow '{workflow['name']}' started")
+
+    # Check if first step needs approval
+    if first_step.get("wait_for_approval"):
+        run["status"] = "paused"
+        run["step_results"][first_step["id"]] = {
+            "status": "waiting_approval",
+            "agent_name": first_step["agent_name"],
+            "started_at": None,
+            "completed_at": None,
+            "output": None
+        }
+        _save_workflow_runs()
+        _add_notification("workflow_paused", f"Workflow '{workflow['name']}' paused — awaiting approval for step '{first_step['name']}'")
+    else:
+        # Execute first step
+        _execute_workflow_step(run, workflow, first_step)
+
+    return jsonify({"status": "success", "run_id": run["run_id"]}), 200
+
+@app.route("/api/workflow_runs", methods=["GET"])
+def api_list_workflow_runs():
+    # Return most recent first, capped at 50
+    runs = sorted(hub_memory["workflow_runs"], key=lambda r: r.get("started_at", 0), reverse=True)[:50]
+    return jsonify({"status": "success", "runs": runs}), 200
+
+@app.route("/api/workflow_runs/<run_id>", methods=["GET"])
+def api_get_workflow_run(run_id):
+    for r in hub_memory["workflow_runs"]:
+        if r["run_id"] == run_id:
+            return jsonify({"status": "success", "run": r}), 200
+    return jsonify({"status": "error", "message": "Run not found."}), 404
+
+@app.route("/api/workflow_runs/<run_id>/approve", methods=["POST"])
+def api_approve_workflow_step(run_id):
+    for run in hub_memory["workflow_runs"]:
+        if run["run_id"] == run_id:
+            if run["status"] != "paused":
+                return jsonify({"status": "error", "message": "Run is not paused."}), 400
+            step_id = run["current_step_id"]
+            # Find workflow and step definition
+            workflow = None
+            for w in hub_memory["workflows"]:
+                if w["id"] == run["workflow_id"]:
+                    workflow = w
+                    break
+            if not workflow:
+                return jsonify({"status": "error", "message": "Workflow definition not found."}), 404
+
+            step_def = None
+            for s in workflow["steps"]:
+                if s["id"] == step_id:
+                    step_def = s
+                    break
+            if not step_def:
+                return jsonify({"status": "error", "message": "Step definition not found."}), 404
+
+            # Execute the approved step
+            _execute_workflow_step(run, workflow, step_def)
+            return jsonify({"status": "success", "message": f"Step '{step_def['name']}' approved and executing."}), 200
+    return jsonify({"status": "error", "message": "Run not found."}), 404
+
+@app.route("/api/workflow_runs/<run_id>/cancel", methods=["POST"])
+def api_cancel_workflow_run(run_id):
+    for run in hub_memory["workflow_runs"]:
+        if run["run_id"] == run_id:
+            if run["status"] in ("completed", "failed", "cancelled"):
+                return jsonify({"status": "error", "message": f"Run is already {run['status']}."}), 400
+            run["status"] = "cancelled"
+            run["completed_at"] = time.time()
+            _save_workflow_runs()
+            _add_notification("workflow_failed", f"Workflow '{run['workflow_name']}' was cancelled")
+            return jsonify({"status": "success", "message": "Workflow run cancelled."}), 200
+    return jsonify({"status": "error", "message": "Run not found."}), 404
 
 
 if __name__ == "__main__":
