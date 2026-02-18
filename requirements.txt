@@ -3,7 +3,9 @@ requests==2.31.0
 python-dotenv==1.0.0
 rich==13.7.1
 discord.py
-python-telegram-bot
+python-telegram-bot>=20.0
+slack_bolt
+slack_sdk
 waitress==2.1.2 # Adding waitress for serving Flask apps
 Pillow==9.4.0 # Adding Pillow for ImageGenerationTool (PIL fork)
 google-cloud-texttospeech==2.16.0 # For Google Cloud TTS
