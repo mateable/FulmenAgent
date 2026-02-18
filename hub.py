@@ -60,7 +60,8 @@ hub_memory = {
     "notifications": [],  # [{"id", "type", "message", "timestamp", "read"}] — capped at 50
     "agent_templates": [],  # Persisted to agent_templates.json
     "workflows": [],        # Persisted to workflows.json
-    "workflow_runs": []     # Persisted to workflow_runs.json
+    "workflow_runs": [],    # Persisted to workflow_runs.json
+    "agent_groups": {}      # {"group_name": {"name", "agents": [], "created_at"}} — Persisted to agent_groups.json
 }
 
 launched_agent_processes = {}
@@ -302,6 +303,28 @@ def _load_webhooks():
             logger.error(f"[Webhooks] Error loading: {e}")
 
 _load_webhooks()
+
+# ─── Agent Groups System ───
+
+AGENT_GROUPS_FILE = os.path.join(os.path.dirname(__file__), "agent_groups.json")
+
+def _save_agent_groups():
+    try:
+        with open(AGENT_GROUPS_FILE, "w") as f:
+            json.dump(hub_memory["agent_groups"], f, indent=2)
+    except Exception as e:
+        logger.error(f"[Groups] Error saving: {e}")
+
+def _load_agent_groups():
+    if os.path.exists(AGENT_GROUPS_FILE):
+        try:
+            with open(AGENT_GROUPS_FILE, "r") as f:
+                hub_memory["agent_groups"] = json.load(f)
+            logger.info(f"[Groups] Loaded {len(hub_memory['agent_groups'])} group(s) from disk.")
+        except Exception as e:
+            logger.error(f"[Groups] Error loading: {e}")
+
+_load_agent_groups()
 
 # ─── Agent Templates System ───
 
@@ -1389,6 +1412,7 @@ def api_create_webhook():
     secret = secrets.token_urlsafe(16)
 
     rate_limit = int(data.get("rate_limit", 0))
+    condition = data.get("condition", "").strip()
 
     webhook = {
         "id": webhook_id,
@@ -1400,7 +1424,8 @@ def api_create_webhook():
         "last_triggered": None,
         "trigger_count": 0,
         "rate_limit": max(rate_limit, 0),
-        "rate_window": []
+        "rate_window": [],
+        "condition": condition
     }
     hub_memory["webhooks"][webhook_id] = webhook
     _save_webhooks()
@@ -1462,6 +1487,14 @@ def webhook_trigger(webhook_id):
         # If no message field, use the entire payload as context
         message = f"Webhook '{wh['name']}' triggered with payload: {json.dumps(body)}"
 
+    # Condition filter — only proceed if payload contains the keyword (case-insensitive)
+    condition = wh.get("condition", "").strip()
+    if condition:
+        payload_text = json.dumps(body).lower() + " " + message.lower()
+        if condition.lower() not in payload_text:
+            logger.info(f"[Webhooks] Webhook '{wh['name']}' skipped — condition '{condition}' not matched in payload")
+            return jsonify({"status": "skipped", "message": f"Condition not met: '{condition}' not found in payload."}), 200
+
     agent_name = wh["agent_name"]
     if agent_name not in hub_memory["agent_message_queues"]:
         hub_memory["agent_message_queues"][agent_name] = []
@@ -1477,6 +1510,73 @@ def webhook_trigger(webhook_id):
     _add_notification("webhook_triggered", f"Webhook '{wh['name']}' triggered for agent '{agent_name}'")
     logger.info(f"[Webhooks] Webhook '{wh['name']}' (id={webhook_id}) triggered for agent '{agent_name}'")
     return jsonify({"status": "success", "message": f"Message sent to agent '{agent_name}'."}), 200
+
+
+# ─── Agent Groups API ───
+
+@app.route("/api/agent_groups", methods=["GET"])
+def api_list_agent_groups():
+    return jsonify({"status": "success", "groups": list(hub_memory["agent_groups"].values())}), 200
+
+@app.route("/api/agent_groups", methods=["POST"])
+def api_create_agent_group():
+    data = request.json or {}
+    name = data.get("name", "").strip()
+    agents = data.get("agents", [])
+    if not name:
+        return jsonify({"status": "error", "message": "Group name is required."}), 400
+    if name in hub_memory["agent_groups"]:
+        return jsonify({"status": "error", "message": f"Group '{name}' already exists."}), 400
+    hub_memory["agent_groups"][name] = {
+        "name": name,
+        "agents": [a.strip() for a in agents if a.strip()],
+        "created_at": time.time()
+    }
+    _save_agent_groups()
+    logger.info(f"[Groups] Created group '{name}' with agents: {agents}")
+    return jsonify({"status": "success", "group": hub_memory["agent_groups"][name]}), 200
+
+@app.route("/api/agent_groups/<group_name>", methods=["PUT"])
+def api_update_agent_group(group_name):
+    if group_name not in hub_memory["agent_groups"]:
+        return jsonify({"status": "error", "message": "Group not found."}), 404
+    data = request.json or {}
+    agents = data.get("agents", [])
+    hub_memory["agent_groups"][group_name]["agents"] = [a.strip() for a in agents if a.strip()]
+    _save_agent_groups()
+    return jsonify({"status": "success", "group": hub_memory["agent_groups"][group_name]}), 200
+
+@app.route("/api/agent_groups/<group_name>", methods=["DELETE"])
+def api_delete_agent_group(group_name):
+    if group_name in hub_memory["agent_groups"]:
+        del hub_memory["agent_groups"][group_name]
+        _save_agent_groups()
+        return jsonify({"status": "success"}), 200
+    return jsonify({"status": "error", "message": "Group not found."}), 404
+
+@app.route("/api/agent_groups/<group_name>/send", methods=["POST"])
+def api_send_to_group(group_name):
+    """Send a message to all agents in a group."""
+    if group_name not in hub_memory["agent_groups"]:
+        return jsonify({"status": "error", "message": "Group not found."}), 404
+    data = request.json or {}
+    message = data.get("message", "").strip()
+    if not message:
+        return jsonify({"status": "error", "message": "Message is required."}), 400
+    group = hub_memory["agent_groups"][group_name]
+    sent_to = []
+    for agent_name in group["agents"]:
+        if agent_name in hub_memory["active_agents"]:
+            if agent_name not in hub_memory["agent_message_queues"]:
+                hub_memory["agent_message_queues"][agent_name] = []
+            hub_memory["agent_message_queues"][agent_name].append({
+                "sender": f"group:{group_name}",
+                "message": message
+            })
+            sent_to.append(agent_name)
+    _add_notification("group_message", f"Message sent to group '{group_name}' ({len(sent_to)} agents)")
+    logger.info(f"[Groups] Message sent to group '{group_name}': {sent_to}")
+    return jsonify({"status": "success", "sent_to": sent_to, "message": f"Sent to {len(sent_to)} agent(s)."}), 200
 
 
 # ─── Notification API ───
@@ -2102,7 +2202,8 @@ def api_export_settings():
     base_dir = os.path.dirname(__file__)
     files_to_export = [
         "webhooks.json", "agent_templates.json", "workflows.json",
-        "workflow_runs.json", "scheduled_tasks.json", "notifications.json"
+        "workflow_runs.json", "scheduled_tasks.json", "notifications.json",
+        "agent_groups.json"
     ]
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for fname in files_to_export:
@@ -2115,16 +2216,18 @@ def api_export_settings():
 @app.route("/api/import_settings", methods=["POST"])
 def api_import_settings():
     """Import settings from a zip file backup. Merges/replaces the JSON config files."""
-    if "file" not in request.files:
+    # Accept either "settings_zip" (from dashboard form) or "file" as the upload key
+    f = request.files.get("settings_zip") or request.files.get("file")
+    if not f:
         return jsonify({"status": "error", "message": "No file uploaded."}), 400
-    f = request.files["file"]
     if not f.filename.endswith(".zip"):
         return jsonify({"status": "error", "message": "File must be a .zip archive."}), 400
 
     base_dir = os.path.dirname(__file__)
     allowed_files = {
         "webhooks.json", "agent_templates.json", "workflows.json",
-        "workflow_runs.json", "scheduled_tasks.json", "notifications.json"
+        "workflow_runs.json", "scheduled_tasks.json", "notifications.json",
+        "agent_groups.json"
     }
     imported = []
     try:
@@ -2140,6 +2243,7 @@ def api_import_settings():
         _load_workflow_runs()
         _load_scheduled_tasks()
         _load_notifications()
+        _load_agent_groups()
         logger.info(f"[Import] Imported settings: {imported}")
         return jsonify({"status": "success", "message": f"Imported {len(imported)} file(s): {', '.join(imported)}"}), 200
     except Exception as e:

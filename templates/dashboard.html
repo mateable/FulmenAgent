@@ -358,6 +358,15 @@
                         <button type="submit" style="padding: 6px 16px; cursor: pointer;">Broadcast</button>
                     </form>
                 </div>
+
+                <div style="margin-top: 15px; padding: 15px; border: 1px solid var(--section-border); border-radius: 8px;">
+                    <strong>Agent Groups</strong>
+                    <div style="display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; align-items: end;">
+                        <input type="text" id="new-group-name" placeholder="Group name" style="padding: 6px; width: 160px;">
+                        <button type="button" onclick="createAgentGroup()" style="padding: 6px 16px; cursor: pointer;">Create Group</button>
+                    </div>
+                    <div id="agent-groups-list" style="margin-top: 12px;"></div>
+                </div>
             </div>
             <div class="section">
                 <h2>Recent Experiences</h2>
@@ -683,7 +692,7 @@
                 <h2>Webhook Triggers</h2>
                 <p style="color: #aaa;">Create webhook URLs that external services (GitHub, Zapier, curl) can POST to, triggering a task for a specific agent.</p>
 
-                <form id="create-webhook-form" style="display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 15px; margin-top: 15px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e; align-items: end;">
+                <form id="create-webhook-form" style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 15px; margin-top: 15px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e; align-items: end;">
                     <div>
                         <label for="webhook-name">Webhook Name:</label>
                         <input type="text" id="webhook-name" placeholder="e.g., GitHub Push" style="width: 100%; padding: 6px;" required>
@@ -697,6 +706,10 @@
                     <div>
                         <label for="webhook-rate-limit">Rate Limit (per min):</label>
                         <input type="number" id="webhook-rate-limit" placeholder="0 = unlimited" min="0" value="0" style="width: 100%; padding: 6px;">
+                    </div>
+                    <div style="grid-column: 1 / 3;">
+                        <label for="webhook-condition">Condition (optional):</label>
+                        <input type="text" id="webhook-condition" placeholder="Only trigger if payload contains this keyword (leave empty for always)" style="width: 100%; padding: 6px;">
                     </div>
                     <div>
                         <button type="submit" style="padding: 8px 20px; cursor: pointer;">Create Webhook</button>
@@ -1006,12 +1019,13 @@
                 }
 
                 const baseUrl = window.location.origin;
-                let html = '<table><thead><tr><th>Name</th><th>Agent</th><th>Webhook URL</th><th>Rate Limit</th><th>Triggers</th><th>Last Triggered</th><th>Enabled</th><th>Actions</th></tr></thead><tbody>';
+                let html = '<table><thead><tr><th>Name</th><th>Agent</th><th>Webhook URL</th><th>Rate Limit</th><th>Condition</th><th>Triggers</th><th>Last Triggered</th><th>Enabled</th><th>Actions</th></tr></thead><tbody>';
                 for (const wh of webhooks) {
                     const url = `${baseUrl}/webhook/${wh.id}?secret=${wh.secret}`;
                     const lastTriggered = wh.last_triggered ? moment(wh.last_triggered * 1000).fromNow() : 'Never';
                     const enabledLabel = wh.enabled ? 'Yes' : 'No';
                     const rateStr = (wh.rate_limit && wh.rate_limit > 0) ? wh.rate_limit + '/min' : 'None';
+                    const condStr = wh.condition ? `<code>${wh.condition}</code>` : '<span style="color:#888;">—</span>';
                     html += `<tr>
                         <td>${wh.name}</td>
                         <td>${wh.agent_name}</td>
@@ -1020,6 +1034,7 @@
                             <button type="button" onclick="copyToClipboard('${url}')" style="margin-left: 4px; padding: 2px 8px; cursor: pointer; font-size: 0.85em;" title="Copy URL">Copy</button>
                         </td>
                         <td>${rateStr}</td>
+                        <td>${condStr}</td>
                         <td>${wh.trigger_count}</td>
                         <td>${lastTriggered}</td>
                         <td><button type="button" onclick="toggleWebhook('${wh.id}')" style="padding: 2px 10px; cursor: pointer;">${enabledLabel}</button></td>
@@ -1038,17 +1053,19 @@
             const name = document.getElementById('webhook-name').value.trim();
             const agent_name = document.getElementById('webhook-agent').value;
             const rate_limit = parseInt(document.getElementById('webhook-rate-limit').value) || 0;
+            const condition = document.getElementById('webhook-condition').value.trim();
             if (!name || !agent_name) { alert('Name and agent are required.'); return; }
             try {
                 const response = await fetch('/api/webhooks', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, agent_name, rate_limit })
+                    body: JSON.stringify({ name, agent_name, rate_limit, condition })
                 });
                 const result = await response.json();
                 if (result.status === 'success') {
                     document.getElementById('webhook-name').value = '';
                     document.getElementById('webhook-rate-limit').value = '0';
+                    document.getElementById('webhook-condition').value = '';
                     fetchAndDisplayWebhooks();
                     alert('Webhook created! Copy the URL from the table.');
                 } else {
@@ -1104,6 +1121,117 @@
             } catch (e) {
                 console.error('Error broadcasting:', e);
             }
+        }
+
+        // --- Agent Groups Functions ---
+
+        async function fetchAndDisplayAgentGroups() {
+            try {
+                const resp = await fetch('/api/agent_groups');
+                const data = await resp.json();
+                const groups = data.groups || [];
+                const container = document.getElementById('agent-groups-list');
+                if (groups.length === 0) {
+                    container.innerHTML = '<p style="color: #888; font-size: 0.9em;">No groups yet.</p>';
+                    return;
+                }
+                const activeAgents = Object.keys(hub_memory_cache.active_agents || {});
+                let html = '';
+                for (const g of groups) {
+                    const agentTags = g.agents.map(a => {
+                        const isActive = activeAgents.includes(a);
+                        return `<span style="display:inline-block; padding:2px 8px; margin:2px; border-radius:4px; font-size:0.85em; background:${isActive ? '#27ae6033' : '#e74c3c33'}; border:1px solid ${isActive ? '#27ae60' : '#e74c3c'};">${a}</span>`;
+                    }).join('') || '<span style="color:#888; font-size:0.85em;">No agents</span>';
+                    html += `<div style="padding:10px; margin-bottom:8px; border:1px solid var(--section-border); border-radius:6px; background:var(--pre-bg);">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                            <strong>${g.name}</strong>
+                            <div style="display:flex; gap:4px;">
+                                <button type="button" onclick="editGroupAgents('${g.name}')" style="padding:2px 8px; cursor:pointer; font-size:0.85em;">Edit</button>
+                                <button type="button" onclick="deleteAgentGroup('${g.name}')" style="padding:2px 8px; cursor:pointer; font-size:0.85em; color:#e74c3c;">Delete</button>
+                            </div>
+                        </div>
+                        <div style="margin-bottom:6px;">${agentTags}</div>
+                        <div style="display:flex; gap:6px;">
+                            <input type="text" id="group-msg-${g.name.replace(/[^a-zA-Z0-9]/g,'_')}" placeholder="Message to group..." style="flex:1; padding:4px 8px; font-size:0.9em;">
+                            <button type="button" onclick="sendToGroup('${g.name}')" style="padding:4px 12px; cursor:pointer; font-size:0.85em;">Send</button>
+                        </div>
+                    </div>`;
+                }
+                container.innerHTML = html;
+            } catch (e) {
+                console.error('Error fetching agent groups:', e);
+            }
+        }
+
+        async function createAgentGroup() {
+            const name = document.getElementById('new-group-name').value.trim();
+            if (!name) { alert('Enter a group name.'); return; }
+            try {
+                const resp = await fetch('/api/agent_groups', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, agents: [] })
+                });
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    document.getElementById('new-group-name').value = '';
+                    fetchAndDisplayAgentGroups();
+                    editGroupAgents(name);
+                } else {
+                    alert(data.message);
+                }
+            } catch (e) { alert('Failed to create group.'); }
+        }
+
+        async function editGroupAgents(groupName) {
+            const activeAgents = Object.keys(hub_memory_cache.active_agents || {});
+            if (activeAgents.length === 0) { alert('No active agents to add.'); return; }
+            // Fetch current group
+            const resp = await fetch('/api/agent_groups');
+            const data = await resp.json();
+            const group = (data.groups || []).find(g => g.name === groupName);
+            const current = group ? group.agents : [];
+            const choices = activeAgents.map(a => `${current.includes(a) ? '[x]' : '[ ]'} ${a}`).join('\n');
+            const input = prompt(`Select agents for group "${groupName}".\nEnter comma-separated agent names:\n\nActive agents: ${activeAgents.join(', ')}\nCurrently in group: ${current.join(', ') || '(none)'}`, current.join(', '));
+            if (input === null) return;
+            const agents = input.split(',').map(a => a.trim()).filter(a => a);
+            try {
+                await fetch(`/api/agent_groups/${encodeURIComponent(groupName)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ agents })
+                });
+                fetchAndDisplayAgentGroups();
+            } catch (e) { alert('Failed to update group.'); }
+        }
+
+        async function deleteAgentGroup(groupName) {
+            if (!confirm(`Delete group "${groupName}"?`)) return;
+            try {
+                await fetch(`/api/agent_groups/${encodeURIComponent(groupName)}`, { method: 'DELETE' });
+                fetchAndDisplayAgentGroups();
+            } catch (e) { alert('Failed to delete group.'); }
+        }
+
+        async function sendToGroup(groupName) {
+            const inputId = 'group-msg-' + groupName.replace(/[^a-zA-Z0-9]/g, '_');
+            const input = document.getElementById(inputId);
+            const message = input.value.trim();
+            if (!message) return;
+            try {
+                const resp = await fetch(`/api/agent_groups/${encodeURIComponent(groupName)}/send`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message })
+                });
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    alert(data.message);
+                    input.value = '';
+                } else {
+                    alert(data.message);
+                }
+            } catch (e) { alert('Failed to send to group.'); }
         }
 
         // --- Agent Template Functions ---
@@ -2245,6 +2373,7 @@
             fetchAndDisplayWebhooks();
             fetchAgentTemplates();
             fetchAndDisplayWorkflows();
+            fetchAndDisplayAgentGroups();
 
             // Polling for dynamic data
             setInterval(fetchAndDisplayAgents, 10000);
@@ -2257,6 +2386,7 @@
             setInterval(fetchAndDisplayScheduledTasks, 10000);
             setInterval(fetchNotifications, 5000);
             setInterval(fetchAndDisplayWebhooks, 10000);
+            setInterval(fetchAndDisplayAgentGroups, 10000);
             setInterval(fetchAndDisplayWorkflowRuns, 5000);
 
             // Attach form submission handlers and other buttons
