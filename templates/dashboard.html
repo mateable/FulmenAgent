@@ -235,6 +235,28 @@
         .agent-msg-arrow { color: var(--secondary-color); font-size: 0.85em; padding-top: 1px; }
         .agent-msg-text { flex: 1; word-break: break-word; padding-top: 1px; }
 
+        /* ─── Swarm Styles ─── */
+        .swarm-run-card {
+            border: 1px solid var(--section-border); border-radius: 8px; padding: 14px;
+            margin-bottom: 12px; background: var(--list-item-bg);
+        }
+        .swarm-run-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .swarm-status-badge {
+            display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.75em;
+            font-weight: 600; color: white;
+        }
+        .swarm-status-badge.running { background: #1877f2; }
+        .swarm-status-badge.aggregating { background: #e67e22; }
+        .swarm-status-badge.completed { background: #42b72a; }
+        .swarm-status-badge.cancelled { background: #6c757d; }
+        .swarm-sub-results { margin-top: 10px; padding: 8px; border-top: 1px solid var(--section-border); }
+        .swarm-sub-result { padding: 6px 0; border-bottom: 1px solid var(--section-border); font-size: 0.88em; }
+        .swarm-sub-result:last-child { border-bottom: none; }
+        .swarm-final-result {
+            margin-top: 10px; padding: 12px; background: var(--section-bg);
+            border: 1px solid var(--primary-color); border-radius: 6px; font-size: 0.9em;
+        }
+
         /* ─── Content Styles ─── */
         h1, h2 { color: var(--primary-color); }
         h3 { color: var(--secondary-color); border-bottom: 1px solid var(--section-border); padding-bottom: 10px; margin-top: 20px; }
@@ -330,6 +352,9 @@
             </a>
             <a class="sidebar-item" data-tab="messages-tab">
                 <span class="nav-icon">&#128172;</span> Messages
+            </a>
+            <a class="sidebar-item" data-tab="swarm-tab">
+                <span class="nav-icon">&#129704;</span> Swarm
             </a>
         </div>
         <div class="sidebar-divider"></div>
@@ -941,6 +966,36 @@
                     <button type="button" onclick="clearAgentMessages()" style="background: var(--shutdown-bg); padding: 6px 14px; font-size: 0.85em; margin-left: auto;">Clear History</button>
                 </div>
                 <div id="agent-messages-feed" style="max-height: 600px; overflow-y: auto; border: 1px solid var(--section-border); border-radius: 8px; padding: 8px;"><p style="color: #888;">No messages yet.</p></div>
+            </div>
+        </div>
+
+        <!-- ═══════ Swarm Tab ═══════ -->
+        <div id="swarm-tab" class="tab-content">
+            <div class="section">
+                <h2>Launch Swarm</h2>
+                <p style="color: var(--secondary-color); margin-bottom: 15px; font-size: 0.9em;">
+                    A swarm lets a lead agent decompose a complex task and delegate sub-tasks to peer agents. Results are automatically collected and synthesized.
+                </p>
+                <div style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 12px;">
+                    <div style="flex: 1; min-width: 150px;">
+                        <label style="font-size: 0.85em; color: var(--secondary-color);">Lead Agent</label>
+                        <select id="swarm-lead-agent" style="width: 100%;"></select>
+                    </div>
+                    <div style="flex: 3; min-width: 250px;">
+                        <label style="font-size: 0.85em; color: var(--secondary-color);">Task</label>
+                        <input type="text" id="swarm-task-input" placeholder="Describe the complex task to swarm..." style="width: 100%;">
+                    </div>
+                    <button type="button" onclick="launchSwarm()" style="padding: 8px 20px; white-space: nowrap;">Launch Swarm</button>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <label style="font-size: 0.85em; color: var(--secondary-color);">Agents to include (leave unchecked for all):</label>
+                    <div id="swarm-agent-checkboxes" style="display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px;"></div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Swarm Runs</h2>
+                <div id="swarm-runs-list"><p style="color: #888;">No swarm runs yet.</p></div>
             </div>
         </div>
 
@@ -2683,6 +2738,7 @@
             fetchAndDisplayAgentGroups();
             fetchAndDisplayActivityLog();
             fetchAndDisplayAgentMessages();
+            fetchAndDisplaySwarmRuns();
 
             // Polling for dynamic data
             setInterval(fetchAndDisplayAgents, 10000);
@@ -2699,6 +2755,7 @@
             setInterval(fetchAndDisplayWorkflowRuns, 5000);
             setInterval(fetchAndDisplayActivityLog, 15000);
             setInterval(fetchAndDisplayAgentMessages, 5000);
+            setInterval(fetchAndDisplaySwarmRuns, 5000);
 
             // Attach form submission handlers and other buttons
             document.getElementById('shutdown-hub-button').addEventListener('click', handleShutdownHub);
@@ -2712,6 +2769,9 @@
             document.getElementById('import-settings-form').addEventListener('submit', handleImportSettings);
             document.getElementById('msg-text-input').addEventListener('keydown', function(e) {
                 if (e.key === 'Enter') { e.preventDefault(); sendAgentToAgentMessage(); }
+            });
+            document.getElementById('swarm-task-input').addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') { e.preventDefault(); launchSwarm(); }
             });
 
             // Open the default tab (Dashboard)
@@ -3314,6 +3374,144 @@
                 fetchAndDisplayAgentMessages();
             } catch (e) {
                 console.error('Error clearing agent messages:', e);
+            }
+        }
+
+        // --- Swarm ---
+        function _populateSwarmDropdowns(agents) {
+            const names = Object.keys(agents).sort();
+            const leadSel = document.getElementById('swarm-lead-agent');
+            const prev = leadSel.value;
+            leadSel.innerHTML = '';
+            names.forEach(function(n) {
+                const opt = document.createElement('option');
+                opt.value = n; opt.textContent = n;
+                leadSel.appendChild(opt);
+            });
+            if (names.includes(prev)) leadSel.value = prev;
+
+            // Agent checkboxes
+            const cbContainer = document.getElementById('swarm-agent-checkboxes');
+            const checked = {};
+            cbContainer.querySelectorAll('input[type="checkbox"]').forEach(function(cb) { checked[cb.value] = cb.checked; });
+            cbContainer.innerHTML = '';
+            names.forEach(function(n) {
+                const label = document.createElement('label');
+                label.style.cssText = 'display: flex; align-items: center; gap: 4px; font-size: 0.88em; cursor: pointer;';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox'; cb.value = n;
+                if (checked[n] !== undefined) cb.checked = checked[n];
+                label.appendChild(cb);
+                label.appendChild(document.createTextNode(n));
+                cbContainer.appendChild(label);
+            });
+        }
+
+        async function fetchAndDisplaySwarmRuns() {
+            try {
+                // Also refresh dropdowns
+                try {
+                    const agentsResp = await fetch('/get_active_agents');
+                    const agentsData = await agentsResp.json();
+                    _populateSwarmDropdowns(agentsData);
+                } catch (e) {}
+
+                const resp = await fetch('/api/swarm/runs');
+                const data = await resp.json();
+                const container = document.getElementById('swarm-runs-list');
+                if (!data.runs || data.runs.length === 0) {
+                    container.innerHTML = '<p style="color: #888;">No swarm runs yet. Launch one above.</p>';
+                    return;
+                }
+                let html = '';
+                data.runs.forEach(function(run) {
+                    const created = new Date(run.created_at * 1000).toLocaleString();
+                    const completed = run.completed_at ? new Date(run.completed_at * 1000).toLocaleString() : '—';
+                    html += '<div class="swarm-run-card">';
+                    html += '<div class="swarm-run-header">';
+                    html += '<div><strong>Swarm ' + run.run_id + '</strong> &middot; Lead: <strong>' + run.lead_agent + '</strong> &middot; Agents: ' + run.agents.length + '</div>';
+                    html += '<span class="swarm-status-badge ' + run.status + '">' + run.status + '</span>';
+                    html += '</div>';
+                    html += '<div style="font-size: 0.9em; color: var(--text-color); margin-bottom: 6px;"><strong>Task:</strong> ' + (run.task || '').replace(/</g, '&lt;') + '</div>';
+                    html += '<div style="font-size: 0.8em; color: var(--secondary-color);">Started: ' + created + ' &middot; Completed: ' + completed + '</div>';
+
+                    // Sub-results
+                    if (run.sub_results && run.sub_results.length > 0) {
+                        html += '<div class="swarm-sub-results"><strong style="font-size: 0.85em;">Sub-agent results (' + run.sub_results.length + '):</strong>';
+                        run.sub_results.forEach(function(sr) {
+                            const srText = (sr.result || '').replace(/</g, '&lt;').substring(0, 300);
+                            html += '<div class="swarm-sub-result"><strong>' + sr.agent + ':</strong> ' + srText + (sr.result && sr.result.length > 300 ? '...' : '') + '</div>';
+                        });
+                        html += '</div>';
+                    }
+
+                    // Final result
+                    if (run.final_result) {
+                        html += '<div class="swarm-final-result"><strong>Final Result:</strong><br>' + run.final_result.replace(/</g, '&lt;').replace(/\n/g, '<br>') + '</div>';
+                    }
+
+                    // Actions
+                    if (run.status === 'running' || run.status === 'aggregating') {
+                        html += '<div style="margin-top: 8px;"><button onclick="cancelSwarmRun(\'' + run.run_id + '\')" style="background: var(--shutdown-bg); padding: 5px 12px; font-size: 0.85em;">Cancel</button></div>';
+                    } else {
+                        html += '<div style="margin-top: 8px;"><button onclick="deleteSwarmRun(\'' + run.run_id + '\')" style="background: var(--secondary-color); padding: 5px 12px; font-size: 0.85em;">Delete</button></div>';
+                    }
+
+                    html += '</div>';
+                });
+                container.innerHTML = html;
+            } catch (err) {
+                console.error('Error fetching swarm runs:', err);
+            }
+        }
+
+        async function launchSwarm() {
+            const leadAgent = document.getElementById('swarm-lead-agent').value;
+            const task = document.getElementById('swarm-task-input').value.trim();
+            if (!leadAgent || !task) {
+                alert('Please select a lead agent and enter a task.');
+                return;
+            }
+            // Get selected agents (if any checked)
+            const checkboxes = document.querySelectorAll('#swarm-agent-checkboxes input[type="checkbox"]:checked');
+            let agents = [];
+            checkboxes.forEach(function(cb) { agents.push(cb.value); });
+
+            try {
+                const resp = await fetch('/api/swarm/launch', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({task: task, lead_agent: leadAgent, agents: agents.length > 0 ? agents : []})
+                });
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    document.getElementById('swarm-task-input').value = '';
+                    fetchAndDisplaySwarmRuns();
+                } else {
+                    alert(data.message || 'Error launching swarm.');
+                }
+            } catch (e) {
+                console.error('Error launching swarm:', e);
+            }
+        }
+
+        async function cancelSwarmRun(runId) {
+            if (!confirm('Cancel this swarm run?')) return;
+            try {
+                await fetch('/api/swarm/runs/' + runId + '/cancel', {method: 'POST'});
+                fetchAndDisplaySwarmRuns();
+            } catch (e) {
+                console.error('Error cancelling swarm:', e);
+            }
+        }
+
+        async function deleteSwarmRun(runId) {
+            if (!confirm('Delete this swarm run?')) return;
+            try {
+                await fetch('/api/swarm/runs/' + runId, {method: 'DELETE'});
+                fetchAndDisplaySwarmRuns();
+            } catch (e) {
+                console.error('Error deleting swarm run:', e);
             }
         }
 

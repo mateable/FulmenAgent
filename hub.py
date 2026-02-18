@@ -212,7 +212,8 @@ hub_memory = {
     "workflow_runs": [],    # Persisted to workflow_runs.json
     "agent_groups": {},      # {"group_name": {"name", "agents": [], "created_at"}} — Persisted to agent_groups.json
     "activity_log": [],       # [{"id", "event", "details", "timestamp"}] — capped at 500, persisted
-    "agent_messages": []     # [{id, from_agent, to_agent, message, timestamp}] — agent-to-agent history, capped at 200
+    "agent_messages": [],     # [{id, from_agent, to_agent, message, timestamp}] — agent-to-agent history, capped at 200
+    "swarm_runs": []          # [{run_id, task, lead_agent, status, agents, sub_results, final_result, created_at, completed_at}]
 }
 
 launched_agent_processes = {}
@@ -505,6 +506,73 @@ def _record_agent_message(from_agent, to_agent, message):
     if len(hub_memory["agent_messages"]) > MAX_AGENT_MESSAGES:
         hub_memory["agent_messages"] = hub_memory["agent_messages"][:MAX_AGENT_MESSAGES]
     _save_agent_messages()
+
+# ─── Swarm System ───
+
+SWARM_RUNS_FILE = os.path.join(os.path.dirname(__file__), "swarm_runs.json")
+
+def _save_swarm_runs():
+    try:
+        with open(SWARM_RUNS_FILE, "w") as f:
+            json.dump(hub_memory["swarm_runs"], f, indent=2)
+    except Exception as e:
+        logger.error(f"[Swarm] Error saving: {e}")
+
+def _load_swarm_runs():
+    if os.path.exists(SWARM_RUNS_FILE):
+        try:
+            with open(SWARM_RUNS_FILE, "r") as f:
+                hub_memory["swarm_runs"] = json.load(f)
+            logger.info(f"[Swarm] Loaded {len(hub_memory['swarm_runs'])} swarm run(s) from disk.")
+        except Exception as e:
+            logger.error(f"[Swarm] Error loading: {e}")
+
+_load_swarm_runs()
+
+def _check_swarm_completion(agent_name, message):
+    """Check if an agent's response contributes to an active swarm run."""
+    for run in hub_memory["swarm_runs"]:
+        if run["status"] != "running":
+            continue
+        # Check if this agent is a participant (not the lead) in this swarm
+        if agent_name in run.get("agents", []) and agent_name != run["lead_agent"]:
+            # Record this sub-result
+            run["sub_results"].append({
+                "agent": agent_name,
+                "result": message,
+                "timestamp": time.time()
+            })
+            _save_swarm_runs()
+            logger.info(f"[Swarm] Sub-result from '{agent_name}' for swarm '{run['run_id']}' ({len(run['sub_results'])}/{len(run['agents'])-1} results)")
+
+            # Check if we have enough results (all non-lead agents responded)
+            non_lead_agents = [a for a in run["agents"] if a != run["lead_agent"]]
+            responded_agents = set(r["agent"] for r in run["sub_results"])
+            if responded_agents >= set(non_lead_agents):
+                # All sub-agents responded — send aggregation task to lead
+                logger.info(f"[Swarm] All sub-results collected for swarm '{run['run_id']}'. Sending aggregation to lead '{run['lead_agent']}'.")
+                results_summary = "\n".join([f"- {r['agent']}: {r['result'][:500]}" for r in run["sub_results"]])
+                agg_message = f"[SWARM_AGGREGATE:{run['run_id']}] You are the lead agent. Your team has completed their sub-tasks. Synthesize these results into a final comprehensive answer.\n\nOriginal task: {run['task']}\n\nSub-agent results:\n{results_summary}\n\nProvide a synthesized final answer."
+                if run["lead_agent"] not in hub_memory["agent_message_queues"]:
+                    hub_memory["agent_message_queues"][run["lead_agent"]] = []
+                hub_memory["agent_message_queues"][run["lead_agent"]].append({
+                    "sender": "swarm",
+                    "message": agg_message
+                })
+                run["status"] = "aggregating"
+                _save_swarm_runs()
+                _add_notification("swarm_aggregating", f"Swarm '{run['run_id']}': all sub-results collected, lead agent synthesizing")
+            return  # Only match the first relevant swarm run
+
+        # Check if the lead agent is sending the final aggregated result
+        if agent_name == run["lead_agent"] and run["status"] == "aggregating":
+            run["final_result"] = message
+            run["status"] = "completed"
+            run["completed_at"] = time.time()
+            _save_swarm_runs()
+            _add_notification("swarm_completed", f"Swarm '{run['run_id']}' completed: {message[:80]}")
+            logger.info(f"[Swarm] Swarm '{run['run_id']}' completed with final result.")
+            return
 
 # ─── Webhook System ───
 
@@ -1454,8 +1522,9 @@ def receive_user_message():
             "timestamp": time.time()
         })
         logger.info(f"Received message from agent '{agent_name}' for user.")
-        # Check if this completes a workflow step
+        # Check if this completes a workflow step or swarm sub-task
         _check_workflow_step_completion(agent_name, message)
+        _check_swarm_completion(agent_name, message)
         return jsonify({"status": "success", "message": "Message queued for processing."}), 200
     return jsonify({"status": "error", "message": "Invalid message data."}), 400
 
@@ -2435,7 +2504,8 @@ def api_export_settings():
     files_to_export = [
         "webhooks.json", "agent_templates.json", "workflows.json",
         "workflow_runs.json", "scheduled_tasks.json", "notifications.json",
-        "agent_groups.json", "activity_log.json", "agent_messages.json"
+        "agent_groups.json", "activity_log.json", "agent_messages.json",
+        "swarm_runs.json"
     ]
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for fname in files_to_export:
@@ -2459,7 +2529,8 @@ def api_import_settings():
     allowed_files = {
         "webhooks.json", "agent_templates.json", "workflows.json",
         "workflow_runs.json", "scheduled_tasks.json", "notifications.json",
-        "agent_groups.json", "activity_log.json", "agent_messages.json"
+        "agent_groups.json", "activity_log.json", "agent_messages.json",
+        "swarm_runs.json"
     }
     imported = []
     try:
@@ -2478,6 +2549,7 @@ def api_import_settings():
         _load_agent_groups()
         _load_activity_log()
         _load_agent_messages()
+        _load_swarm_runs()
         logger.info(f"[Import] Imported settings: {imported}")
         _log_activity("settings_imported", f"Imported {len(imported)} file(s): {', '.join(imported)}")
         return jsonify({"status": "success", "message": f"Imported {len(imported)} file(s): {', '.join(imported)}"}), 200
@@ -2610,6 +2682,104 @@ def api_clear_agent_messages():
     _save_agent_messages()
     _log_activity("agent_messages_cleared", "Agent message history cleared by admin")
     return jsonify({"status": "success", "message": "Agent message history cleared."}), 200
+
+
+# ─── Swarm API ───
+
+@app.route("/api/swarm/launch", methods=["POST"])
+def api_swarm_launch():
+    """Launch a swarm: lead agent decomposes the task and delegates to peers."""
+    data = request.json or {}
+    task = data.get("task", "").strip()
+    lead_agent = data.get("lead_agent", "").strip()
+    agents_list = data.get("agents", [])  # Optional: specific agents to use
+    source_connector = data.get("source_connector", "")
+
+    if not task or not lead_agent:
+        return jsonify({"status": "error", "message": "task and lead_agent are required."}), 400
+
+    if lead_agent not in hub_memory["active_agents"]:
+        return jsonify({"status": "error", "message": f"Lead agent '{lead_agent}' is not active."}), 400
+
+    # If no agents specified, use all active agents
+    if not agents_list:
+        agents_list = list(hub_memory["active_agents"].keys())
+
+    # Ensure lead agent is in the list
+    if lead_agent not in agents_list:
+        agents_list.insert(0, lead_agent)
+
+    run_id = str(uuid.uuid4())[:8]
+    run = {
+        "run_id": run_id,
+        "task": task,
+        "lead_agent": lead_agent,
+        "agents": agents_list,
+        "status": "running",
+        "sub_results": [],
+        "final_result": None,
+        "source_connector": source_connector,
+        "created_at": time.time(),
+        "completed_at": None
+    }
+    hub_memory["swarm_runs"].insert(0, run)
+    _save_swarm_runs()
+
+    # Build list of available peer agents for the lead
+    peer_names = [a for a in agents_list if a != lead_agent and a in hub_memory["active_agents"]]
+    peers_str = ", ".join(peer_names) if peer_names else "none"
+
+    # Send the decomposition task to the lead agent
+    swarm_message = (
+        f"[SWARM:{run_id}] You are the LEAD AGENT in a swarm. Your job is to break this task into sub-tasks "
+        f"and delegate them to your peer agents using the send_agent_message tool.\n\n"
+        f"TASK: {task}\n\n"
+        f"AVAILABLE PEER AGENTS: {peers_str}\n\n"
+        f"INSTRUCTIONS:\n"
+        f"- Break the task into sub-tasks (one per peer agent).\n"
+        f"- Use send_agent_message to send each sub-task to a different peer agent.\n"
+        f"- Be specific about what each agent should do.\n"
+        f"- After delegating, send a message to the user confirming delegation."
+    )
+
+    if lead_agent not in hub_memory["agent_message_queues"]:
+        hub_memory["agent_message_queues"][lead_agent] = []
+    hub_memory["agent_message_queues"][lead_agent].append({
+        "sender": "swarm",
+        "message": swarm_message
+    })
+
+    _add_notification("swarm_launched", f"Swarm '{run_id}' launched — lead: {lead_agent}, task: {task[:60]}")
+    _log_activity("swarm_launched", f"Swarm '{run_id}' launched with lead '{lead_agent}' and {len(agents_list)} agents")
+    logger.info(f"[Swarm] Launched swarm '{run_id}' — lead: {lead_agent}, agents: {agents_list}")
+
+    return jsonify({"status": "success", "run_id": run_id, "message": f"Swarm launched with {len(agents_list)} agents."}), 200
+
+@app.route("/api/swarm/runs", methods=["GET"])
+def api_swarm_runs():
+    """List all swarm runs."""
+    return jsonify({"status": "success", "runs": hub_memory["swarm_runs"]}), 200
+
+@app.route("/api/swarm/runs/<run_id>/cancel", methods=["POST"])
+def api_swarm_cancel(run_id):
+    """Cancel a swarm run."""
+    for run in hub_memory["swarm_runs"]:
+        if run["run_id"] == run_id:
+            if run["status"] in ("running", "aggregating"):
+                run["status"] = "cancelled"
+                run["completed_at"] = time.time()
+                _save_swarm_runs()
+                _add_notification("swarm_cancelled", f"Swarm '{run_id}' was cancelled")
+                return jsonify({"status": "success", "message": "Swarm cancelled."}), 200
+            return jsonify({"status": "error", "message": f"Swarm is already {run['status']}."}), 400
+    return jsonify({"status": "error", "message": "Swarm run not found."}), 404
+
+@app.route("/api/swarm/runs/<run_id>", methods=["DELETE"])
+def api_swarm_delete(run_id):
+    """Delete a swarm run from history."""
+    hub_memory["swarm_runs"] = [r for r in hub_memory["swarm_runs"] if r["run_id"] != run_id]
+    _save_swarm_runs()
+    return jsonify({"status": "success", "message": "Swarm run deleted."}), 200
 
 
 if __name__ == "__main__":

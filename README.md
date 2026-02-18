@@ -12,7 +12,9 @@ This project implements a multi-agent network designed for autonomous task execu
 *   **Experience Sharing**: Agents submit their experiences (steps, results, reflections) to the Hub, allowing for collective learning and tip distillation.
 *   **Proactive Loops**: Agents can operate in a proactive mode, continuously processing messages and goals.
 *   **Communication Connectors**: Support for integrating with external platforms like Discord, Telegram, LINE, WhatsApp, X (Twitter), and Voice (Twilio).
-*   **Web Dashboard**: A real-time web dashboard to monitor active agents, distilled tips, recent experiences, and manage agent configurations.
+*   **Swarm Mode**: Orchestrate multiple agents on complex tasks — a lead agent decomposes the work, delegates to peers, and synthesizes the final result. Trigger from the dashboard or any connector with `swarm:` prefix.
+*   **Agent-to-Agent Messaging**: Agents discover peers automatically and collaborate via `send_agent_message`. Full message history visible on the dashboard.
+*   **Web Dashboard**: A real-time web dashboard to monitor active agents, distilled tips, recent experiences, manage agent configurations, launch swarms, view agent messages, and track activity logs.
 *   **Extensible**: Easily add new tools or modify agent behaviors.
 
 ## Project Structure
@@ -277,6 +279,51 @@ Example command to the agent:
 ```
 
 The agent's planner will interpret this goal, identify the `cold_call` tool, extract the necessary arguments (`phone_number`, `contact_name`, `call_script`), and execute the tool. The same `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `GOOGLE_APPLICATION_CREDENTIALS` will be used for these actions.
+
+## Swarm Mode (Multi-Agent Collaboration)
+
+Swarm mode lets multiple agents collaborate on complex tasks. A lead agent decomposes the task, delegates sub-tasks to peer agents, collects their results, and synthesizes a final answer.
+
+### How It Works
+
+1.  **Launch a swarm** from the dashboard **Swarm** tab or from any connector by prefixing your message with `swarm:`
+2.  The **lead agent** receives the task, plans how to decompose it, and delegates sub-tasks to peer agents using `send_agent_message`
+3.  **Peer agents** work on their sub-tasks independently
+4.  The **hub collects results** as agents complete their work
+5.  Once all results are in, the **lead agent synthesizes** a final answer
+
+### Launch from Dashboard
+
+1.  Go to the **Swarm** tab
+2.  Select a **Lead Agent** and enter a **Task**
+3.  Optionally select specific worker agents
+4.  Click **Launch Swarm**
+
+### Launch from Connectors (Discord / Telegram / Slack)
+
+Prefix your message with `swarm:` in any connected chat:
+
+```
+swarm: Research the top 5 AI frameworks and compare their performance
+```
+
+The bot agent becomes the lead, runs the swarm, and sends the final result back to the chat.
+
+### Agent-to-Agent Messaging
+
+Agents automatically discover their peers and can message each other using the `send_agent_message` tool. The **Messages** tab on the dashboard shows all inter-agent communication history.
+
+### Quick Start
+
+```bash
+# Launch 3 agents for swarm collaboration
+python3 main_agent_entrypoint.py \
+  --num-agents 3 \
+  --agent-names "Leader,Researcher,Analyst" \
+  --connector-types "none,none,none"
+```
+
+For full details, see the [Swarm Mode Guide](docs/swarm-mode-guide.md).
 
 ## Disclaimer
 

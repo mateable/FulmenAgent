@@ -4,6 +4,7 @@ import os
 import requests
 import time
 import threading
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple # Added Tuple
 from urllib.parse import urljoin
 import sys
@@ -198,8 +199,59 @@ class Agent:
         self.executor = Executor(self.tools)
         self.critic = Critic(self.planner, self.memory) # Critic also needs base_model and memory
 
+        self._active_connector_context = None  # Set when processing a connector message
+
         self.logger.info(f"Agent {self.agent_name} initialized. Proactive: {self.is_proactive}, Execution Mode: {self.execution_mode}, Batch Experience: {self.batch_experience}, Proactive Interval: {self.proactive_interval}s")
 
+    def handle_message(self, text, context, image_path=None):
+        """Called by connectors (Discord/Telegram/Slack) when a message arrives.
+        Stores the connector context so responses route back to the originating platform."""
+        self.logger.info(f"[Connector] Received message from {context.get('author', 'unknown')}: {text[:100]}")
+        self._active_connector_context = context
+        try:
+            # Check for swarm trigger
+            if text.strip().lower().startswith("swarm:"):
+                swarm_task = text.strip()[6:].strip()
+                if swarm_task:
+                    self._launch_swarm_from_connector(swarm_task, context)
+                    return
+            message = {"sender": context.get("author", "user"), "message": text}
+            self._process_single_message(message)
+        finally:
+            self._active_connector_context = None
+
+    def _send_to_connector(self, text, context):
+        """Send a response back through a connector (handles async→sync bridge)."""
+        connector = context.get("connector")
+        if not connector:
+            return
+        try:
+            coro = connector.send_response(text, context)
+            try:
+                loop = asyncio.get_running_loop()
+                asyncio.run_coroutine_threadsafe(coro, loop)
+            except RuntimeError:
+                asyncio.run(coro)
+        except Exception as e:
+            self.logger.error(f"[Connector] Error sending response: {e}")
+
+    def _launch_swarm_from_connector(self, task, context):
+        """Launch a swarm from a connector message and route the final result back."""
+        self.logger.info(f"[Swarm] Launching swarm from connector for task: {task[:80]}")
+        try:
+            resp = requests.post(
+                urljoin(self.hub_url, "/api/swarm/launch"),
+                json={"task": task, "lead_agent": self.agent_name, "source_connector": context.get("session_id", "")},
+                timeout=10
+            )
+            data = resp.json()
+            if data.get("status") == "success":
+                self._send_to_connector(f"Swarm launched (ID: {data.get('run_id', '?')}). Working on it...", context)
+            else:
+                self._send_to_connector(f"Failed to launch swarm: {data.get('message', 'unknown error')}", context)
+        except Exception as e:
+            self.logger.error(f"[Swarm] Error launching swarm from connector: {e}")
+            self._send_to_connector(f"Error launching swarm: {e}", context)
 
     def _initialize_tools(self) -> List[BaseTool]:
         """Initializes all available tools for the agent."""
@@ -554,6 +606,9 @@ class Agent:
                                 send_tool.run(message=last_output, agent_name=self.agent_name, title=f"Result: {task[:50]}")
                             except Exception as e:
                                 self.logger.error(f"Error auto-sending result to user: {e}")
+                        # Also send back through the connector if this message came from one
+                        if self._active_connector_context:
+                            self._send_to_connector(last_output, self._active_connector_context)
 
             # After all steps in a plan attempt, reflect
             self.logger.info(f"Agent {self.agent_name} reflecting on task: {task}")

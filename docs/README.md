@@ -10,6 +10,7 @@ Setup guides and reference docs for all plugins and integrations.
 |-------|---------------|
 | [Features Guide](features-guide.md) | Agent Templates, Webhooks, Notifications, Broadcast, Scheduled Tasks |
 | [Workflow Engine](workflow-guide.md) | Agent chaining, template variables, approval gates, failure recovery |
+| [Swarm Mode](swarm-mode-guide.md) | Multi-agent collaboration, task decomposition, peer delegation, connector triggers |
 
 ## Plugin Guides
 
