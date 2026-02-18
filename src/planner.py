@@ -10,12 +10,13 @@ from ollama import Client # Re-add Ollama Client
 from openai import OpenAI # Re-add OpenAI for OpenRouter/Moonshot
 
 class Planner:
-    def __init__(self, agent_name: str, base_model: Any, memory: Memory, tools: List[Any], llm_provider_settings: Dict[str, Any]):
+    def __init__(self, agent_name: str, base_model: Any, memory: Memory, tools: List[Any], llm_provider_settings: Dict[str, Any], hub_url: str = None):
         self.agent_name = agent_name
         self.base_model = base_model
         self.memory = memory
         self.tools = {tool.name: tool for tool in tools}
         self.llm_provider_settings = llm_provider_settings
+        self.hub_url = hub_url or os.environ.get("HUB_URL", "http://127.0.0.1:5000")
         self.logger = logging.getLogger(f"Planner.{agent_name}")
 
         self.openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -255,6 +256,24 @@ class Planner:
         response = self._call_llm(prompt, temperature=0.5, provider=provider)
         return response # Returns {"content": ..., "token_usage": {...}}
 
+    def _get_peer_agents_section(self) -> str:
+        """Fetch active agents from the hub and build a peer agents section for the prompt."""
+        try:
+            resp = requests.get(f"{self.hub_url}/get_active_agents", timeout=3)
+            resp.raise_for_status()
+            agents_data = resp.json()
+            peer_names = [name for name in agents_data.keys() if name != self.agent_name]
+            if peer_names:
+                peer_list = ", ".join(peer_names)
+                return f"""
+Peer agents online (use "send_agent_message" to collaborate):
+  {peer_list}
+  - You can delegate sub-tasks to these agents. Use send_agent_message with args: {{"agent_name": "<name>", "message": "<what you need them to do>"}}
+"""
+            return ""
+        except Exception:
+            return ""
+
     def create_plan(self, task: str, recent_experiences: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Creates a plan to address the given task, incorporating recent experiences and relevant memories.
@@ -292,6 +311,9 @@ class Planner:
         # Build tool descriptions so the LLM knows what each tool does and how to call it
         tool_descriptions = "\n".join([f"  - {tool.name}: {tool.description}" for tool in self.tools.values()])
 
+        # Fetch peer agents for collaboration awareness
+        peer_agents_section = self._get_peer_agents_section()
+
         # Detect AI-to-AI compact mode
         ai2ai_mode = False
         ai2ai_sender = ""
@@ -312,16 +334,18 @@ class Planner:
   - Keep tool args minimal. No filler words.
   - If using send_user_message or gibberlink_send, keep the message under 50 words using key:value pairs."""
 
-        prompt = f"""You are an AI agent. Create a simple plan for this task.
+        prompt = f"""You are "{self.agent_name}", an AI agent in a multi-agent network. Create a plan for this task.
 
 TASK: {clean_task}
 
 Available tools:
 {tool_descriptions}
-
+{peer_agents_section}
 RULES:
 - Create only 1 step for simple tasks.
 - For weather tasks, use "weather_tool" with the EXACT location from the task.
+- If the task is complex, consider delegating sub-tasks to peer agents using "send_agent_message".
+- When delegating, be specific about what you need the other agent to do.
 - Respond with ONLY a JSON object.{compact_rules}
 
 Example response:

@@ -186,7 +186,8 @@ class Agent:
             base_model=self.base_model,
             memory=self.memory,
             tools={}, # Temporarily empty; tools will be fully populated by _initialize_tools
-            llm_provider_settings=self.llm_provider_settings
+            llm_provider_settings=self.llm_provider_settings,
+            hub_url=self.hub_url
         )
 
         # Initialize tools

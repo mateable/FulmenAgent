@@ -202,7 +202,7 @@ class SendAgentMessageTool(BaseTool):
     def __init__(self):
         super().__init__(
             name="send_agent_message",
-            description="Sends a message to another agent. Takes 'agent_name' and 'message' as arguments."
+            description="Sends a message or delegates a task to another agent in the network. Takes 'agent_name' (the target agent's name) and 'message' (the task or message to send). Use this to collaborate with peer agents on complex tasks."
         )
         self.hub_url = os.environ.get("HUB_URL", "http://127.0.0.1:5000")
 
