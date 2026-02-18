@@ -206,9 +206,28 @@ _load_scheduled_tasks()
 # ─── Notification System ───
 
 MAX_NOTIFICATIONS = 50
+NOTIFICATIONS_FILE = os.path.join(os.path.dirname(__file__), "notifications.json")
+
+def _save_notifications():
+    try:
+        with open(NOTIFICATIONS_FILE, "w") as f:
+            json.dump(hub_memory["notifications"], f, indent=2)
+    except Exception as e:
+        logger.error(f"[Notifications] Error saving: {e}")
+
+def _load_notifications():
+    if os.path.exists(NOTIFICATIONS_FILE):
+        try:
+            with open(NOTIFICATIONS_FILE, "r") as f:
+                hub_memory["notifications"] = json.load(f)
+            logger.info(f"[Notifications] Loaded {len(hub_memory['notifications'])} notification(s) from disk.")
+        except Exception as e:
+            logger.error(f"[Notifications] Error loading: {e}")
+
+_load_notifications()
 
 def _add_notification(ntype, message):
-    """Add a notification to the in-memory feed (capped at MAX_NOTIFICATIONS)."""
+    """Add a notification to the feed (capped at MAX_NOTIFICATIONS, persisted to disk)."""
     hub_memory["notifications"].insert(0, {
         "id": str(uuid.uuid4())[:8],
         "type": ntype,
@@ -218,6 +237,7 @@ def _add_notification(ntype, message):
     })
     if len(hub_memory["notifications"]) > MAX_NOTIFICATIONS:
         hub_memory["notifications"] = hub_memory["notifications"][:MAX_NOTIFICATIONS]
+    _save_notifications()
 
 # ─── Webhook System ───
 
@@ -1203,6 +1223,7 @@ def reset_hub():
     }
     hub_memory["per_agent_token_usage"] = {}
     hub_memory["notifications"] = []
+    _save_notifications()
     hub_memory["workflow_runs"] = []
     _save_workflow_runs()
     # Keep global_plugin_preferences, global_auto_install_deps, discovered_plugins, scheduled_tasks, webhooks, agent_templates, workflows
@@ -1410,6 +1431,7 @@ def api_mark_notifications_read():
     """Mark all notifications as read."""
     for n in hub_memory["notifications"]:
         n["read"] = True
+    _save_notifications()
     return jsonify({"status": "success"}), 200
 
 
@@ -2005,6 +2027,114 @@ def api_cancel_workflow_run(run_id):
             _add_notification("workflow_failed", f"Workflow '{run['workflow_name']}' was cancelled")
             return jsonify({"status": "success", "message": "Workflow run cancelled."}), 200
     return jsonify({"status": "error", "message": "Run not found."}), 404
+
+
+# ─── Export / Import Settings ───
+
+from flask import send_file
+import io
+
+@app.route("/api/export_settings", methods=["GET"])
+def api_export_settings():
+    """Export all settings (webhooks, templates, workflows, scheduled tasks, notifications) as a zip file."""
+    buf = io.BytesIO()
+    base_dir = os.path.dirname(__file__)
+    files_to_export = [
+        "webhooks.json", "agent_templates.json", "workflows.json",
+        "workflow_runs.json", "scheduled_tasks.json", "notifications.json"
+    ]
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fname in files_to_export:
+            fpath = os.path.join(base_dir, fname)
+            if os.path.exists(fpath):
+                zf.write(fpath, fname)
+    buf.seek(0)
+    return send_file(buf, mimetype="application/zip", as_attachment=True, download_name="fulmen_settings_backup.zip")
+
+@app.route("/api/import_settings", methods=["POST"])
+def api_import_settings():
+    """Import settings from a zip file backup. Merges/replaces the JSON config files."""
+    if "file" not in request.files:
+        return jsonify({"status": "error", "message": "No file uploaded."}), 400
+    f = request.files["file"]
+    if not f.filename.endswith(".zip"):
+        return jsonify({"status": "error", "message": "File must be a .zip archive."}), 400
+
+    base_dir = os.path.dirname(__file__)
+    allowed_files = {
+        "webhooks.json", "agent_templates.json", "workflows.json",
+        "workflow_runs.json", "scheduled_tasks.json", "notifications.json"
+    }
+    imported = []
+    try:
+        with zipfile.ZipFile(f.stream, "r") as zf:
+            for name in zf.namelist():
+                if name in allowed_files:
+                    zf.extract(name, base_dir)
+                    imported.append(name)
+        # Reload all data from disk
+        _load_webhooks()
+        _load_agent_templates()
+        _load_workflows()
+        _load_workflow_runs()
+        _load_scheduled_tasks()
+        _load_notifications()
+        logger.info(f"[Import] Imported settings: {imported}")
+        return jsonify({"status": "success", "message": f"Imported {len(imported)} file(s): {', '.join(imported)}"}), 200
+    except Exception as e:
+        logger.error(f"[Import] Error importing settings: {e}")
+        return jsonify({"status": "error", "message": f"Import failed: {e}"}), 500
+
+
+# ─── Agent Cloning ───
+
+@app.route("/api/clone_agent/<agent_name>", methods=["POST"])
+def api_clone_agent(agent_name):
+    """Clone a running agent's config into a new agent with a different name."""
+    data = request.json or {}
+    new_name = data.get("new_name", "").strip()
+    if not new_name:
+        return jsonify({"status": "error", "message": "New agent name is required."}), 400
+    if new_name in hub_memory["active_agents"]:
+        return jsonify({"status": "error", "message": f"Agent '{new_name}' is already running."}), 400
+    if new_name in launched_agent_processes:
+        return jsonify({"status": "error", "message": f"Agent '{new_name}' already has a running process."}), 400
+
+    # Find the original agent's launch config from the process command
+    if agent_name not in launched_agent_processes:
+        return jsonify({"status": "error", "message": f"Cannot clone — agent '{agent_name}' was not launched from this hub."}), 400
+
+    # We can't recover the original launch args from the PID,
+    # so we launch the clone with the same defaults. The user can customize via the form.
+    # Build a basic launch command with the same defaults
+    try:
+        cmd = [
+            sys.executable,
+            os.path.join(os.path.dirname(__file__), "main_agent_entrypoint.py"),
+            "--num-agents", "1",
+            "--agent-names", new_name,
+            "--connector-types", "none",
+            "--proactive-loops", os.environ.get("DEFAULT_PROACTIVE_LOOPS", "yes"),
+            "--execution-modes", os.environ.get("DEFAULT_EXECUTION_MODE", "unrestricted"),
+            "--batch-experience", os.environ.get("DEFAULT_BATCH_EXPERIENCE", "no"),
+            "--proactive-interval", os.environ.get("DEFAULT_PROACTIVE_INTERVAL", "600"),
+        ]
+
+        agent_stdout_path = os.path.join(os.path.dirname(__file__), f"agent_{new_name}_stdout.log")
+        agent_stderr_path = os.path.join(os.path.dirname(__file__), f"agent_{new_name}_stderr.log")
+        env = os.environ.copy()
+
+        with open(agent_stdout_path, "w") as stdout_file, open(agent_stderr_path, "w") as stderr_file:
+            with open(os.devnull, 'r') as devnull:
+                process = subprocess.Popen(cmd, stdin=devnull, stdout=stdout_file, stderr=stderr_file, preexec_fn=os.setsid, env=env)
+                launched_agent_processes[new_name] = process.pid
+
+        logger.info(f"Cloned agent '{agent_name}' as '{new_name}' (PID: {process.pid})")
+        _add_notification("agent_launched", f"Agent '{new_name}' cloned from '{agent_name}'")
+        return jsonify({"status": "success", "message": f"Agent '{new_name}' cloned and launched."}), 200
+    except Exception as e:
+        logger.error(f"Error cloning agent '{agent_name}' as '{new_name}': {e}")
+        return jsonify({"status": "error", "message": f"Clone failed: {e}"}), 500
 
 
 if __name__ == "__main__":

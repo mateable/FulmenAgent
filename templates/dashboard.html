@@ -565,6 +565,19 @@
                 </form>
 
                 <div style="margin-top: 30px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e;">
+                    <h3 style="margin-top: 0;">Export &amp; Import Settings</h3>
+                    <p style="color: #aaa; font-size: 0.9em;">Download all hub settings as a zip file, or restore from a previous export.</p>
+                    <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                        <button type="button" onclick="window.location='/api/export_settings'" style="padding: 8px 16px; cursor: pointer;">Export Settings (.zip)</button>
+                        <form id="import-settings-form" enctype="multipart/form-data" style="display: flex; gap: 8px; align-items: center; margin: 0;">
+                            <input type="file" name="settings_zip" accept=".zip" required style="font-size: 0.9em;">
+                            <button type="submit" style="padding: 8px 16px; cursor: pointer;">Import</button>
+                        </form>
+                    </div>
+                    <div id="import-status" style="margin-top: 8px; display: none;"></div>
+                </div>
+
+                <div style="margin-top: 30px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e;">
                     <h3 style="margin-top: 0;">Software Updates</h3>
                     <p style="color: #aaa; font-size: 0.9em;">Current version: <strong id="update-current-version">...</strong> (<span id="update-current-commit">...</span>) on branch <span id="update-branch">...</span></p>
                     <div id="update-status" style="margin: 12px 0; padding: 10px; border-radius: 6px; display: none;"></div>
@@ -1677,6 +1690,7 @@
                                     <button class="shutdown-agent-button" data-agent-name="${name}">Shutdown</button>
                                     <button type="button" data-agent="${name}" class="view-memories-btn" style="padding: 4px 10px; cursor: pointer; font-size: 0.85em;">Memories</button>
                                     <button type="button" data-agent="${name}" class="view-logs-btn" style="padding: 4px 10px; cursor: pointer; font-size: 0.85em;">Logs</button>
+                                    <button type="button" data-agent="${name}" class="clone-agent-btn" style="padding: 4px 10px; cursor: pointer; font-size: 0.85em;">Clone</button>
                                 </div>
                             </div>
                             <form class="send-message-form" data-agent-name="${name}" style="margin-top: 10px;">
@@ -1707,6 +1721,9 @@
                     });
                     document.querySelectorAll('.view-logs-btn').forEach(button => {
                         button.addEventListener('click', () => viewAgentLogs(button.dataset.agent));
+                    });
+                    document.querySelectorAll('.clone-agent-btn').forEach(button => {
+                        button.addEventListener('click', () => cloneAgent(button.dataset.agent));
                     });
                 }
             } catch (error) {
@@ -1777,6 +1794,51 @@
                 panel.innerHTML = html;
             } catch (e) {
                 panel.innerHTML = '<p style="color: #e74c3c;">Error loading logs.</p>';
+            }
+        }
+
+        async function cloneAgent(agentName) {
+            const newName = prompt(`Clone agent "${agentName}".\nEnter a name for the new agent:`, agentName + '_clone');
+            if (!newName || !newName.trim()) return;
+            try {
+                const response = await fetch(`/api/clone_agent/${encodeURIComponent(agentName)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ new_name: newName.trim() })
+                });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    alert(`Agent "${newName.trim()}" cloned and launched successfully.`);
+                    fetchAndDisplayAgents();
+                } else {
+                    alert('Clone failed: ' + (data.message || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Clone request failed: ' + e.message);
+            }
+        }
+
+        async function handleImportSettings(event) {
+            event.preventDefault();
+            const form = event.target;
+            const statusDiv = document.getElementById('import-status');
+            const formData = new FormData(form);
+            statusDiv.style.display = 'block';
+            statusDiv.innerHTML = '<span style="color: #f39c12;">Importing...</span>';
+            try {
+                const response = await fetch('/api/import_settings', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                if (data.status === 'success') {
+                    statusDiv.innerHTML = '<span style="color: #27ae60;">Settings imported successfully. Reloading page...</span>';
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    statusDiv.innerHTML = '<span style="color: #e74c3c;">Import failed: ' + (data.message || 'Unknown error') + '</span>';
+                }
+            } catch (e) {
+                statusDiv.innerHTML = '<span style="color: #e74c3c;">Import request failed: ' + e.message + '</span>';
             }
         }
 
@@ -2150,6 +2212,7 @@
             document.getElementById('add-scheduled-task-form').addEventListener('submit', handleAddScheduledTask);
             document.getElementById('create-webhook-form').addEventListener('submit', handleCreateWebhook);
             document.getElementById('broadcast-form').addEventListener('submit', handleBroadcast);
+            document.getElementById('import-settings-form').addEventListener('submit', handleImportSettings);
 
             // Open the default tab (Dashboard)
             openTab(null, 'dashboard-tab');
