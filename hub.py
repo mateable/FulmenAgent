@@ -64,6 +64,8 @@ hub_memory = {
 }
 
 launched_agent_processes = {}
+launched_agent_configs = {}  # {agent_name: {"cmd": [...], "env": {...}}} — for auto-restart
+auto_restart_enabled = True
 
 shutdown_event = threading.Event()
 
@@ -91,6 +93,46 @@ def _signal_handler(signum, frame):
 
 signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
+
+
+def _auto_restart_monitor():
+    """Background thread: periodically checks if any launched agent processes have died and restarts them."""
+    while not shutdown_event.is_set():
+        shutdown_event.wait(30)  # Check every 30 seconds
+        if shutdown_event.is_set() or not auto_restart_enabled:
+            continue
+        for agent_name, pid in list(launched_agent_processes.items()):
+            try:
+                os.kill(pid, 0)  # Check if process is alive (signal 0 = no-op)
+            except ProcessLookupError:
+                # Process is dead — try to restart
+                config = launched_agent_configs.get(agent_name)
+                if not config:
+                    logger.warning(f"[AutoRestart] Agent '{agent_name}' (PID {pid}) died but no launch config saved — cannot restart.")
+                    launched_agent_processes.pop(agent_name, None)
+                    continue
+                logger.warning(f"[AutoRestart] Agent '{agent_name}' (PID {pid}) died — restarting...")
+                try:
+                    cmd = config["cmd"]
+                    env = config["env"]
+                    stdout_path = os.path.join(os.path.dirname(__file__), f"agent_{agent_name}_stdout.log")
+                    stderr_path = os.path.join(os.path.dirname(__file__), f"agent_{agent_name}_stderr.log")
+                    with open(stdout_path, "a") as stdout_f, open(stderr_path, "a") as stderr_f:
+                        with open(os.devnull, 'r') as devnull:
+                            process = subprocess.Popen(cmd, stdin=devnull, stdout=stdout_f, stderr=stderr_f, preexec_fn=os.setsid, env=env)
+                            launched_agent_processes[agent_name] = process.pid
+                    logger.info(f"[AutoRestart] Agent '{agent_name}' restarted (new PID: {process.pid})")
+                    _add_notification("agent_restarted", f"Agent '{agent_name}' crashed and was auto-restarted")
+                except Exception as e:
+                    logger.error(f"[AutoRestart] Failed to restart agent '{agent_name}': {e}")
+                    launched_agent_processes.pop(agent_name, None)
+            except PermissionError:
+                pass  # Process exists but we can't signal it — leave it
+
+
+_auto_restart_thread = threading.Thread(target=_auto_restart_monitor, daemon=True)
+_auto_restart_thread.start()
+
 
 def _discover_all_plugins():
     """
@@ -656,6 +698,7 @@ def shutdown_agent(agent_name):
         process_terminated_successfully = False
         if agent_name in launched_agent_processes:
             pid = launched_agent_processes.pop(agent_name)
+            launched_agent_configs.pop(agent_name, None)  # Remove config so auto-restart won't revive it
             try:
                 os.killpg(pid, signal.SIGTERM) # Use SIGTERM for graceful shutdown
                 logger.info(f"Terminated agent process group for '{agent_name}' (PID: {pid}).")
@@ -1345,6 +1388,8 @@ def api_create_webhook():
     webhook_id = str(uuid.uuid4())[:8]
     secret = secrets.token_urlsafe(16)
 
+    rate_limit = int(data.get("rate_limit", 0))
+
     webhook = {
         "id": webhook_id,
         "name": name,
@@ -1353,7 +1398,9 @@ def api_create_webhook():
         "created_at": time.time(),
         "enabled": True,
         "last_triggered": None,
-        "trigger_count": 0
+        "trigger_count": 0,
+        "rate_limit": max(rate_limit, 0),
+        "rate_window": []
     }
     hub_memory["webhooks"][webhook_id] = webhook
     _save_webhooks()
@@ -1394,6 +1441,19 @@ def webhook_trigger(webhook_id):
     provided_secret = request.args.get("secret") or request.headers.get("X-Webhook-Secret", "")
     if provided_secret != wh["secret"]:
         return jsonify({"status": "error", "message": "Invalid secret."}), 401
+
+    # Rate limiting
+    rate_limit = wh.get("rate_limit", 0)
+    if rate_limit and rate_limit > 0:
+        now = time.time()
+        window = wh.get("rate_window", [])
+        # Keep only timestamps within the last 60 seconds
+        window = [t for t in window if now - t < 60]
+        if len(window) >= rate_limit:
+            logger.warning(f"[Webhooks] Rate limit exceeded for webhook '{wh['name']}' ({rate_limit}/min)")
+            return jsonify({"status": "error", "message": f"Rate limit exceeded ({rate_limit} calls/min)."}), 429
+        window.append(now)
+        wh["rate_window"] = window
 
     # Extract message from body
     body = request.get_json(silent=True) or {}
@@ -1835,7 +1895,8 @@ def launch_agent():
             with open(os.devnull, 'r') as devnull:
                 process = subprocess.Popen(cmd, stdin=devnull, stdout=stdout_file, stderr=stderr_file, preexec_fn=os.setsid, env=env)
                 launched_agent_processes[agent_name] = process.pid # Store the PID
-        
+                launched_agent_configs[agent_name] = {"cmd": cmd, "env": env}
+
         logger.info(f"Launched agent '{agent_name}' with command: {' '.join(cmd)}")
         _add_notification("agent_launched", f"Agent '{agent_name}' launched")
         return jsonify({"status": "success", "message": f"Agent '{agent_name}' launched successfully!"}), 200
@@ -2128,6 +2189,7 @@ def api_clone_agent(agent_name):
             with open(os.devnull, 'r') as devnull:
                 process = subprocess.Popen(cmd, stdin=devnull, stdout=stdout_file, stderr=stderr_file, preexec_fn=os.setsid, env=env)
                 launched_agent_processes[new_name] = process.pid
+                launched_agent_configs[new_name] = {"cmd": cmd, "env": env}
 
         logger.info(f"Cloned agent '{agent_name}' as '{new_name}' (PID: {process.pid})")
         _add_notification("agent_launched", f"Agent '{new_name}' cloned from '{agent_name}'")
@@ -2135,6 +2197,21 @@ def api_clone_agent(agent_name):
     except Exception as e:
         logger.error(f"Error cloning agent '{agent_name}' as '{new_name}': {e}")
         return jsonify({"status": "error", "message": f"Clone failed: {e}"}), 500
+
+
+# ─── Auto-Restart API ───
+
+@app.route("/api/auto_restart", methods=["GET"])
+def api_get_auto_restart():
+    return jsonify({"status": "success", "enabled": auto_restart_enabled}), 200
+
+@app.route("/api/auto_restart", methods=["POST"])
+def api_toggle_auto_restart():
+    global auto_restart_enabled
+    data = request.json or {}
+    auto_restart_enabled = bool(data.get("enabled", not auto_restart_enabled))
+    logger.info(f"[AutoRestart] Auto-restart {'enabled' if auto_restart_enabled else 'disabled'}")
+    return jsonify({"status": "success", "enabled": auto_restart_enabled}), 200
 
 
 if __name__ == "__main__":

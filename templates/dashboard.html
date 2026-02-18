@@ -349,6 +349,7 @@
             </div>
             <div class="section">
                 <h2>Active Agents</h2>
+                <input type="text" id="agent-search-filter" placeholder="Filter agents by name..." oninput="filterAgents()" style="width: 100%; max-width: 400px; padding: 6px 10px; margin-bottom: 10px; border-radius: 6px; border: 1px solid var(--section-border); background: var(--input-bg); color: var(--text-color);">
                 <ul id="active-agents-list"></ul>
                 <div style="margin-top: 15px; padding: 15px; border: 1px solid var(--section-border); border-radius: 8px;">
                     <strong>Broadcast to All Agents</strong>
@@ -565,6 +566,18 @@
                 </form>
 
                 <div style="margin-top: 30px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e;">
+                    <h3 style="margin-top: 0;">Agent Auto-Restart</h3>
+                    <p style="color: #aaa; font-size: 0.9em;">Automatically restart agents that crash or die unexpectedly. Checks every 30 seconds.</p>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <label class="switch">
+                            <input type="checkbox" id="auto-restart-toggle" checked onchange="toggleAutoRestart(this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                        <span id="auto-restart-status-text">(Currently: Enabled)</span>
+                    </div>
+                </div>
+
+                <div style="margin-top: 30px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e;">
                     <h3 style="margin-top: 0;">Export &amp; Import Settings</h3>
                     <p style="color: #aaa; font-size: 0.9em;">Download all hub settings as a zip file, or restore from a previous export.</p>
                     <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
@@ -670,7 +683,7 @@
                 <h2>Webhook Triggers</h2>
                 <p style="color: #aaa;">Create webhook URLs that external services (GitHub, Zapier, curl) can POST to, triggering a task for a specific agent.</p>
 
-                <form id="create-webhook-form" style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 15px; margin-top: 15px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e; align-items: end;">
+                <form id="create-webhook-form" style="display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 15px; margin-top: 15px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e; align-items: end;">
                     <div>
                         <label for="webhook-name">Webhook Name:</label>
                         <input type="text" id="webhook-name" placeholder="e.g., GitHub Push" style="width: 100%; padding: 6px;" required>
@@ -680,6 +693,10 @@
                         <select id="webhook-agent" style="width: 100%; padding: 6px;">
                             <option value="">-- Select an agent --</option>
                         </select>
+                    </div>
+                    <div>
+                        <label for="webhook-rate-limit">Rate Limit (per min):</label>
+                        <input type="number" id="webhook-rate-limit" placeholder="0 = unlimited" min="0" value="0" style="width: 100%; padding: 6px;">
                     </div>
                     <div>
                         <button type="submit" style="padding: 8px 20px; cursor: pointer;">Create Webhook</button>
@@ -989,11 +1006,12 @@
                 }
 
                 const baseUrl = window.location.origin;
-                let html = '<table><thead><tr><th>Name</th><th>Agent</th><th>Webhook URL</th><th>Triggers</th><th>Last Triggered</th><th>Enabled</th><th>Actions</th></tr></thead><tbody>';
+                let html = '<table><thead><tr><th>Name</th><th>Agent</th><th>Webhook URL</th><th>Rate Limit</th><th>Triggers</th><th>Last Triggered</th><th>Enabled</th><th>Actions</th></tr></thead><tbody>';
                 for (const wh of webhooks) {
                     const url = `${baseUrl}/webhook/${wh.id}?secret=${wh.secret}`;
                     const lastTriggered = wh.last_triggered ? moment(wh.last_triggered * 1000).fromNow() : 'Never';
                     const enabledLabel = wh.enabled ? 'Yes' : 'No';
+                    const rateStr = (wh.rate_limit && wh.rate_limit > 0) ? wh.rate_limit + '/min' : 'None';
                     html += `<tr>
                         <td>${wh.name}</td>
                         <td>${wh.agent_name}</td>
@@ -1001,6 +1019,7 @@
                             <code>${url}</code>
                             <button type="button" onclick="copyToClipboard('${url}')" style="margin-left: 4px; padding: 2px 8px; cursor: pointer; font-size: 0.85em;" title="Copy URL">Copy</button>
                         </td>
+                        <td>${rateStr}</td>
                         <td>${wh.trigger_count}</td>
                         <td>${lastTriggered}</td>
                         <td><button type="button" onclick="toggleWebhook('${wh.id}')" style="padding: 2px 10px; cursor: pointer;">${enabledLabel}</button></td>
@@ -1018,16 +1037,18 @@
             event.preventDefault();
             const name = document.getElementById('webhook-name').value.trim();
             const agent_name = document.getElementById('webhook-agent').value;
+            const rate_limit = parseInt(document.getElementById('webhook-rate-limit').value) || 0;
             if (!name || !agent_name) { alert('Name and agent are required.'); return; }
             try {
                 const response = await fetch('/api/webhooks', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, agent_name })
+                    body: JSON.stringify({ name, agent_name, rate_limit })
                 });
                 const result = await response.json();
                 if (result.status === 'success') {
                     document.getElementById('webhook-name').value = '';
+                    document.getElementById('webhook-rate-limit').value = '0';
                     fetchAndDisplayWebhooks();
                     alert('Webhook created! Copy the URL from the table.');
                 } else {
@@ -1797,6 +1818,16 @@
             }
         }
 
+        function filterAgents() {
+            const query = document.getElementById('agent-search-filter').value.toLowerCase();
+            const items = document.querySelectorAll('#active-agents-list li');
+            items.forEach(li => {
+                const name = li.querySelector('strong');
+                if (!name) { li.style.display = ''; return; }
+                li.style.display = name.textContent.toLowerCase().includes(query) ? '' : 'none';
+            });
+        }
+
         async function cloneAgent(agentName) {
             const newName = prompt(`Clone agent "${agentName}".\nEnter a name for the new agent:`, agentName + '_clone');
             if (!newName || !newName.trim()) return;
@@ -2107,6 +2138,30 @@
             }
         }
 
+        async function fetchAutoRestartStatus() {
+            try {
+                const resp = await fetch('/api/auto_restart');
+                const data = await resp.json();
+                const enabled = data.enabled;
+                document.getElementById('auto-restart-toggle').checked = enabled;
+                document.getElementById('auto-restart-status-text').textContent = enabled ? '(Currently: Enabled)' : '(Currently: Disabled)';
+            } catch (e) {}
+        }
+
+        async function toggleAutoRestart(isChecked) {
+            try {
+                const resp = await fetch('/api/auto_restart', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: isChecked })
+                });
+                const data = await resp.json();
+                document.getElementById('auto-restart-status-text').textContent = data.enabled ? '(Currently: Enabled)' : '(Currently: Disabled)';
+            } catch (e) {
+                console.error('Error toggling auto-restart:', e);
+            }
+        }
+
         async function toggleAutoInstallDeps(isChecked) {
             try {
                 const response = await fetch('/api/settings/auto_install_deps', {
@@ -2183,6 +2238,7 @@
             fetchAndDisplayTokenUsage();
             fetchAndDisplayPlugins();
             fetchAutoInstallDepsStatus();
+            fetchAutoRestartStatus();
             checkVersionBadge();
             fetchAndDisplayScheduledTasks();
             fetchNotifications();
