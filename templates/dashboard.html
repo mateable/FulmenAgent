@@ -205,6 +205,8 @@
         .agent-status-indicator.active { background-color: var(--active-status); }
         .agent-status-indicator.inactive-recent { background-color: var(--inactive-recent-status); }
         .agent-status-indicator.inactive-old { background-color: var(--inactive-old-status); }
+        #active-agents-list li[draggable] { transition: opacity 0.2s, border-top 0.15s; }
+        #active-agents-list li[draggable]:hover { cursor: default; }
 
         table { width: 100%; border-collapse: collapse; margin-top: 15px; color: var(--text-color); }
         th, td { border: 1px solid var(--table-border-color); padding: 8px; text-align: left; }
@@ -227,6 +229,7 @@
                 <span class="bell-icon">&#128276;</span>
                 <span id="notif-badge">0</span>
             </div>
+            <a href="/logout" id="logout-btn" class="icon-btn" title="Logout" style="text-decoration:none; font-size:1.1em; display:none;">&#9211;</a>
         </div>
     </header>
 
@@ -573,6 +576,31 @@
                     </p>
                                         <button type="submit">Save Settings</button>
                 </form>
+
+                <div style="margin-top: 30px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e;">
+                    <h3 style="margin-top: 0;">Dashboard Authentication</h3>
+                    <p style="color: #aaa; font-size: 0.9em;">Manage your admin account. When enabled, a login page is shown before granting access.</p>
+                    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+                        <label class="switch">
+                            <input type="checkbox" id="auth-enabled-toggle" onchange="toggleAuth(this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                        <span id="auth-status-text">(Currently: Disabled)</span>
+                    </div>
+                    <p style="font-size: 0.9em; color: #aaa; margin-bottom: 8px;">Logged in as: <strong id="auth-username-display">—</strong></p>
+                    <div style="display: flex; gap: 8px; align-items: end; flex-wrap: wrap;">
+                        <div>
+                            <label for="auth-username">Change Username:</label>
+                            <input type="text" id="auth-username" placeholder="New username" style="padding: 6px; width: 180px;">
+                        </div>
+                        <div>
+                            <label for="auth-password">Change Password:</label>
+                            <input type="password" id="auth-password" placeholder="New password" style="padding: 6px; width: 180px;">
+                        </div>
+                        <button type="button" onclick="setAuthPassword()" style="padding: 8px 16px; cursor: pointer;">Save Changes</button>
+                    </div>
+                    <div id="auth-save-status" style="margin-top: 6px; font-size: 0.9em;"></div>
+                </div>
 
                 <div style="margin-top: 30px; padding: 20px; border: 1px solid #444; border-radius: 8px; background: #1a1a2e;">
                     <h3 style="margin-top: 0;">Agent Auto-Restart</h3>
@@ -1801,7 +1829,18 @@
                 if (Object.keys(agents).length === 0) {
                     agentList.innerHTML = '<li>No agents currently registered.</li>';
                 } else {
-                    for (const [name, details] of Object.entries(agents)) {
+                    // Sort by saved order from localStorage
+                    const savedOrder = JSON.parse(localStorage.getItem('agentOrder') || '[]');
+                    const agentEntries = Object.entries(agents);
+                    agentEntries.sort((a, b) => {
+                        const ia = savedOrder.indexOf(a[0]);
+                        const ib = savedOrder.indexOf(b[0]);
+                        if (ia === -1 && ib === -1) return 0;
+                        if (ia === -1) return 1;
+                        if (ib === -1) return -1;
+                        return ia - ib;
+                    });
+                    for (const [name, details] of agentEntries) {
                         const lastHeartbeatTime = moment(details.last_heartbeat * 1000);
                         const now = moment();
                         const heartbeatInterval = parseInt(document.getElementById('default-proactive-interval').value) || 600;
@@ -1827,10 +1866,12 @@
                         const tokensStr = h.total_tokens != null ? h.total_tokens.toLocaleString() : '—';
 
                         const li = document.createElement('li');
+                        li.draggable = true;
+                        li.dataset.agentName = name;
                         li.innerHTML = `
                             <div class="agent-status">
                                 <div>
-                                    <span><strong>${name}</strong> <span class="agent-status-indicator ${statusColorClass}"></span></span><br>
+                                    <span style="cursor: grab; user-select: none;">&#9776;</span> <span><strong>${name}</strong> <span class="agent-status-indicator ${statusColorClass}"></span></span><br>
                                     <span>URL: ${details.url}</span><br>
                                     <span>Last Heartbeat: ${lastHeartbeatTime.format('YYYY-MM-DD HH:mm:ss')}</span><br>
                                     <span style="font-size: 0.85em; color: var(--secondary-color);">Uptime: ${uptimeStr} | Tasks: ${tasksStr} | Errors: <span style="color:${h.errors > 0 ? '#e74c3c' : 'inherit'}">${errorsStr}</span> | Tokens: ${tokensStr}</span>
@@ -1874,6 +1915,8 @@
                     document.querySelectorAll('.clone-agent-btn').forEach(button => {
                         button.addEventListener('click', () => cloneAgent(button.dataset.agent));
                     });
+                    // Drag-and-drop reordering
+                    _setupAgentDragDrop(agentList);
                 }
             } catch (error) {
                 console.error('Error fetching active agents:', error);
@@ -1953,6 +1996,47 @@
                 const name = li.querySelector('strong');
                 if (!name) { li.style.display = ''; return; }
                 li.style.display = name.textContent.toLowerCase().includes(query) ? '' : 'none';
+            });
+        }
+
+        let _draggedAgent = null;
+        function _setupAgentDragDrop(list) {
+            const items = list.querySelectorAll('li[draggable]');
+            items.forEach(li => {
+                li.addEventListener('dragstart', (e) => {
+                    _draggedAgent = li;
+                    li.style.opacity = '0.4';
+                    e.dataTransfer.effectAllowed = 'move';
+                });
+                li.addEventListener('dragend', () => {
+                    li.style.opacity = '';
+                    _draggedAgent = null;
+                    // Remove all drag-over highlights
+                    list.querySelectorAll('li').forEach(el => el.style.borderTop = '');
+                });
+                li.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    if (_draggedAgent && _draggedAgent !== li) {
+                        li.style.borderTop = '2px solid #7c83ff';
+                    }
+                });
+                li.addEventListener('dragleave', () => {
+                    li.style.borderTop = '';
+                });
+                li.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    li.style.borderTop = '';
+                    if (_draggedAgent && _draggedAgent !== li) {
+                        list.insertBefore(_draggedAgent, li);
+                        // Save the new order
+                        const newOrder = [];
+                        list.querySelectorAll('li[data-agent-name]').forEach(el => {
+                            newOrder.push(el.dataset.agentName);
+                        });
+                        localStorage.setItem('agentOrder', JSON.stringify(newOrder));
+                    }
+                });
             });
         }
 
@@ -2266,6 +2350,69 @@
             }
         }
 
+        async function fetchAuthStatus() {
+            try {
+                const resp = await fetch('/api/auth/status');
+                const data = await resp.json();
+                const enabled = data.enabled;
+                document.getElementById('auth-enabled-toggle').checked = enabled;
+                document.getElementById('auth-status-text').textContent = enabled ? '(Currently: Enabled)' : '(Currently: Disabled)';
+                document.getElementById('logout-btn').style.display = enabled ? '' : 'none';
+                document.getElementById('auth-username-display').textContent = data.username || '—';
+            } catch (e) {}
+        }
+
+        async function toggleAuth(isChecked) {
+            try {
+                const resp = await fetch('/api/auth/set_password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: isChecked })
+                });
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    document.getElementById('auth-status-text').textContent = data.enabled ? '(Currently: Enabled)' : '(Currently: Disabled)';
+                    document.getElementById('logout-btn').style.display = data.enabled ? '' : 'none';
+                } else {
+                    alert(data.message);
+                    document.getElementById('auth-enabled-toggle').checked = !isChecked;
+                }
+            } catch (e) {
+                alert('Failed to update auth settings.');
+                document.getElementById('auth-enabled-toggle').checked = !isChecked;
+            }
+        }
+
+        async function setAuthPassword() {
+            const username = document.getElementById('auth-username').value.trim();
+            const password = document.getElementById('auth-password').value;
+            if (!username && !password) { alert('Enter a new username or password.'); return; }
+            const enabled = document.getElementById('auth-enabled-toggle').checked;
+            const payload = { enabled };
+            if (username) payload.username = username;
+            if (password) payload.password = password;
+            try {
+                const resp = await fetch('/api/auth/set_password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await resp.json();
+                const statusDiv = document.getElementById('auth-save-status');
+                if (data.status === 'success') {
+                    document.getElementById('auth-password').value = '';
+                    document.getElementById('auth-username').value = '';
+                    statusDiv.innerHTML = '<span style="color: #27ae60;">Changes saved.</span>';
+                    fetchAuthStatus();
+                } else {
+                    statusDiv.innerHTML = '<span style="color: #e74c3c;">' + data.message + '</span>';
+                }
+                setTimeout(() => { statusDiv.innerHTML = ''; }, 3000);
+            } catch (e) {
+                alert('Failed to save changes.');
+            }
+        }
+
         async function fetchAutoRestartStatus() {
             try {
                 const resp = await fetch('/api/auto_restart');
@@ -2367,6 +2514,7 @@
             fetchAndDisplayPlugins();
             fetchAutoInstallDepsStatus();
             fetchAutoRestartStatus();
+            fetchAuthStatus();
             checkVersionBadge();
             fetchAndDisplayScheduledTasks();
             fetchNotifications();

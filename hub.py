@@ -1,6 +1,6 @@
 print("HUB.PY IS EXECUTING!")
 import logging
-from flask import Flask, render_template, jsonify, request, redirect, url_for
+from flask import Flask, render_template, jsonify, request, redirect, url_for, session
 import threading
 from rich.logging import RichHandler
 import os
@@ -12,6 +12,7 @@ import atexit # For cleanup on hub exit
 import uuid # NEW: For unique approval request IDs
 import secrets # For webhook secret tokens
 import time # Ensure time is imported
+import hashlib # For password hashing
 from dotenv import load_dotenv, set_key # Import load_dotenv and set_key
 import zipfile # NEW: For handling zip file uploads
 import shutil # NEW: For directory operations (e.g., rmtree)
@@ -34,6 +35,150 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.jinja_env.cache = {}
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", secrets.token_hex(32))
+
+# ─── Authentication System ───
+
+AUTH_FILE = os.path.join(os.path.dirname(__file__), "auth.json")
+
+def _load_auth():
+    if os.path.exists(AUTH_FILE):
+        try:
+            with open(AUTH_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}  # Empty = no account created yet (first run)
+
+def _save_auth(auth_data):
+    with open(AUTH_FILE, "w") as f:
+        json.dump(auth_data, f, indent=2)
+
+def _hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+_auth_config = _load_auth()
+
+def _is_first_run():
+    """True if no admin account has been set up yet."""
+    return not _auth_config.get("username")
+
+# Routes that agents use (no auth required)
+AGENT_API_PREFIXES = (
+    "/register_agent", "/heartbeat", "/submit_experience",
+    "/receive_user_message", "/webhook/", "/get_pending_messages",
+    "/api/agent_health", "/static/"
+)
+
+@app.before_request
+def _check_auth():
+    path = request.path
+
+    # Always allow agent-to-hub API routes
+    for prefix in AGENT_API_PREFIXES:
+        if path.startswith(prefix):
+            return None
+
+    # Always allow setup, login, logout, favicon
+    if path in ("/setup", "/login", "/logout", "/favicon.ico"):
+        return None
+
+    # First run — force setup before anything else
+    if _is_first_run():
+        if path.startswith("/api/"):
+            return jsonify({"status": "error", "message": "Initial setup required. Visit the dashboard to create your admin account."}), 401
+        return redirect(url_for("setup_page"))
+
+    # Auth enabled — check session
+    if _auth_config.get("enabled", True):
+        if session.get("authenticated"):
+            return None
+        if path.startswith("/api/") or request.is_json:
+            return jsonify({"status": "error", "message": "Authentication required."}), 401
+        return redirect(url_for("login_page"))
+
+    return None
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup_page():
+    """First-run setup: create admin username and password."""
+    if not _is_first_run():
+        return redirect(url_for("dashboard"))
+    error = None
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+        confirm = request.form.get("confirm_password", "").strip()
+        if not username:
+            error = "Username is required."
+        elif not password:
+            error = "Password is required."
+        elif len(password) < 4:
+            error = "Password must be at least 4 characters."
+        elif password != confirm:
+            error = "Passwords do not match."
+        else:
+            global _auth_config
+            _auth_config = {
+                "username": username,
+                "password_hash": _hash_password(password),
+                "enabled": True,
+                "created_at": time.time()
+            }
+            _save_auth(_auth_config)
+            session["authenticated"] = True
+            logger.info(f"[Auth] Admin account created: {username}")
+            return redirect(url_for("dashboard"))
+    return render_template("setup.html", error=error)
+
+@app.route("/login", methods=["GET", "POST"])
+def login_page():
+    if _is_first_run():
+        return redirect(url_for("setup_page"))
+    error = None
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        if (username == _auth_config.get("username", "") and
+                _hash_password(password) == _auth_config.get("password_hash", "")):
+            session["authenticated"] = True
+            return redirect(url_for("dashboard"))
+        error = "Invalid username or password."
+    return render_template("login.html", error=error)
+
+@app.route("/logout")
+def logout():
+    session.pop("authenticated", None)
+    return redirect(url_for("login_page"))
+
+@app.route("/api/auth/status", methods=["GET"])
+def api_auth_status():
+    return jsonify({
+        "status": "success",
+        "enabled": _auth_config.get("enabled", False),
+        "username": _auth_config.get("username", ""),
+        "setup_complete": not _is_first_run()
+    }), 200
+
+@app.route("/api/auth/set_password", methods=["POST"])
+def api_set_password():
+    global _auth_config
+    data = request.json or {}
+    new_password = data.get("password", "").strip()
+    new_username = data.get("username", "").strip()
+    enabled = data.get("enabled", _auth_config.get("enabled", True))
+    if enabled and not new_password and not _auth_config.get("password_hash"):
+        return jsonify({"status": "error", "message": "Password is required to enable authentication."}), 400
+    if new_password:
+        if len(new_password) < 4:
+            return jsonify({"status": "error", "message": "Password must be at least 4 characters."}), 400
+        _auth_config["password_hash"] = _hash_password(new_password)
+    if new_username:
+        _auth_config["username"] = new_username
+    _auth_config["enabled"] = bool(enabled)
+    _save_auth(_auth_config)
+    session["authenticated"] = True
+    return jsonify({"status": "success", "enabled": _auth_config["enabled"], "message": "Authentication settings updated."}), 200
 
 hub_memory = {
     "experiences": [],
