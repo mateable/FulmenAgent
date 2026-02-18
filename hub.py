@@ -211,7 +211,8 @@ hub_memory = {
     "workflows": [],        # Persisted to workflows.json
     "workflow_runs": [],    # Persisted to workflow_runs.json
     "agent_groups": {},      # {"group_name": {"name", "agents": [], "created_at"}} — Persisted to agent_groups.json
-    "activity_log": []       # [{"id", "event", "details", "timestamp"}] — capped at 500, persisted
+    "activity_log": [],       # [{"id", "event", "details", "timestamp"}] — capped at 500, persisted
+    "agent_messages": []     # [{id, from_agent, to_agent, message, timestamp}] — agent-to-agent history, capped at 200
 }
 
 launched_agent_processes = {}
@@ -468,6 +469,42 @@ def _log_activity(event, details=""):
     if len(hub_memory["activity_log"]) > MAX_ACTIVITY_LOG:
         hub_memory["activity_log"] = hub_memory["activity_log"][:MAX_ACTIVITY_LOG]
     _save_activity_log()
+
+# ─── Agent-to-Agent Message History ───
+
+MAX_AGENT_MESSAGES = 200
+AGENT_MESSAGES_FILE = os.path.join(os.path.dirname(__file__), "agent_messages.json")
+
+def _save_agent_messages():
+    try:
+        with open(AGENT_MESSAGES_FILE, "w") as f:
+            json.dump(hub_memory["agent_messages"], f, indent=2)
+    except Exception as e:
+        logger.error(f"[AgentMessages] Error saving: {e}")
+
+def _load_agent_messages():
+    if os.path.exists(AGENT_MESSAGES_FILE):
+        try:
+            with open(AGENT_MESSAGES_FILE, "r") as f:
+                hub_memory["agent_messages"] = json.load(f)
+            logger.info(f"[AgentMessages] Loaded {len(hub_memory['agent_messages'])} message(s) from disk.")
+        except Exception as e:
+            logger.error(f"[AgentMessages] Error loading: {e}")
+
+_load_agent_messages()
+
+def _record_agent_message(from_agent, to_agent, message):
+    """Record an agent-to-agent message in the history (capped, persisted)."""
+    hub_memory["agent_messages"].insert(0, {
+        "id": str(uuid.uuid4())[:8],
+        "from_agent": from_agent,
+        "to_agent": to_agent,
+        "message": message,
+        "timestamp": time.time()
+    })
+    if len(hub_memory["agent_messages"]) > MAX_AGENT_MESSAGES:
+        hub_memory["agent_messages"] = hub_memory["agent_messages"][:MAX_AGENT_MESSAGES]
+    _save_agent_messages()
 
 # ─── Webhook System ───
 
@@ -1396,6 +1433,9 @@ def send_message_to_agent_by_name():
             "sender": sender_agent_name or "unknown_agent",
             "message": message
         })
+        # Record in agent-to-agent message history
+        _record_agent_message(sender_agent_name or "unknown_agent", target_agent_name, message)
+        _log_activity("agent_message", f"'{sender_agent_name}' → '{target_agent_name}': {message[:80]}")
         logger.info(f"Message from agent '{sender_agent_name}' queued for agent '{target_agent_name}'.")
         return jsonify({"status": "success", "message": f"Message queued for agent '{target_agent_name}'."}), 200
     return jsonify({"status": "error", "message": "Invalid target_agent_name or message."}), 400
@@ -2395,7 +2435,7 @@ def api_export_settings():
     files_to_export = [
         "webhooks.json", "agent_templates.json", "workflows.json",
         "workflow_runs.json", "scheduled_tasks.json", "notifications.json",
-        "agent_groups.json", "activity_log.json"
+        "agent_groups.json", "activity_log.json", "agent_messages.json"
     ]
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for fname in files_to_export:
@@ -2419,7 +2459,7 @@ def api_import_settings():
     allowed_files = {
         "webhooks.json", "agent_templates.json", "workflows.json",
         "workflow_runs.json", "scheduled_tasks.json", "notifications.json",
-        "agent_groups.json", "activity_log.json"
+        "agent_groups.json", "activity_log.json", "agent_messages.json"
     }
     imported = []
     try:
@@ -2437,6 +2477,7 @@ def api_import_settings():
         _load_notifications()
         _load_agent_groups()
         _load_activity_log()
+        _load_agent_messages()
         logger.info(f"[Import] Imported settings: {imported}")
         _log_activity("settings_imported", f"Imported {len(imported)} file(s): {', '.join(imported)}")
         return jsonify({"status": "success", "message": f"Imported {len(imported)} file(s): {', '.join(imported)}"}), 200
@@ -2529,6 +2570,46 @@ def api_toggle_auto_restart():
     logger.info(f"[AutoRestart] Auto-restart {'enabled' if auto_restart_enabled else 'disabled'}")
     _log_activity("auto_restart_toggled", f"Auto-restart {'enabled' if auto_restart_enabled else 'disabled'}")
     return jsonify({"status": "success", "enabled": auto_restart_enabled}), 200
+
+
+# ─── Agent-to-Agent Messages API ───
+
+@app.route("/api/agent_messages", methods=["GET"])
+def api_get_agent_messages():
+    """Return agent-to-agent message history, optionally filtered by agent name."""
+    agent_filter = request.args.get("agent", "")
+    limit = request.args.get("limit", 200, type=int)
+    entries = hub_memory["agent_messages"]
+    if agent_filter:
+        entries = [m for m in entries if agent_filter in (m["from_agent"], m["to_agent"])]
+    return jsonify({"status": "success", "messages": entries[:limit]}), 200
+
+@app.route("/api/agent_messages/send", methods=["POST"])
+def api_send_agent_message():
+    """Dashboard-initiated agent-to-agent message: pushes to queue and records history."""
+    data = request.json or {}
+    from_agent = data.get("from_agent", "").strip()
+    to_agent = data.get("to_agent", "").strip()
+    message = data.get("message", "").strip()
+    if not from_agent or not to_agent or not message:
+        return jsonify({"status": "error", "message": "from_agent, to_agent, and message are required."}), 400
+    if to_agent not in hub_memory["agent_message_queues"]:
+        hub_memory["agent_message_queues"][to_agent] = []
+    hub_memory["agent_message_queues"][to_agent].append({
+        "sender": from_agent,
+        "message": message
+    })
+    _record_agent_message(from_agent, to_agent, message)
+    _log_activity("agent_message", f"'{from_agent}' → '{to_agent}': {message[:80]}")
+    return jsonify({"status": "success", "message": f"Message sent from '{from_agent}' to '{to_agent}'."}), 200
+
+@app.route("/api/agent_messages/clear", methods=["POST"])
+def api_clear_agent_messages():
+    """Clear agent-to-agent message history."""
+    hub_memory["agent_messages"] = []
+    _save_agent_messages()
+    _log_activity("agent_messages_cleared", "Agent message history cleared by admin")
+    return jsonify({"status": "success", "message": "Agent message history cleared."}), 200
 
 
 if __name__ == "__main__":

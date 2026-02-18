@@ -219,6 +219,22 @@
         .activity-time { color: var(--secondary-color); font-size: 0.8em; white-space: nowrap; min-width: 130px; }
         .activity-details { flex: 1; word-break: break-word; }
 
+        /* ─── Agent Messages Styles ─── */
+        .agent-msg-entry {
+            display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
+            border-bottom: 1px solid var(--section-border); font-size: 0.9em;
+        }
+        .agent-msg-entry:last-child { border-bottom: none; }
+        .agent-msg-time { color: var(--secondary-color); font-size: 0.78em; white-space: nowrap; min-width: 125px; padding-top: 2px; }
+        .agent-msg-badge {
+            display: inline-block; padding: 2px 9px; border-radius: 4px; font-size: 0.78em;
+            font-weight: 600; white-space: nowrap; color: white;
+        }
+        .agent-msg-from { background: #1877f2; }
+        .agent-msg-to { background: #8e44ad; }
+        .agent-msg-arrow { color: var(--secondary-color); font-size: 0.85em; padding-top: 1px; }
+        .agent-msg-text { flex: 1; word-break: break-word; padding-top: 1px; }
+
         /* ─── Content Styles ─── */
         h1, h2 { color: var(--primary-color); }
         h3 { color: var(--secondary-color); border-bottom: 1px solid var(--section-border); padding-bottom: 10px; margin-top: 20px; }
@@ -311,6 +327,9 @@
             </a>
             <a class="sidebar-item" data-tab="activity-tab">
                 <span class="nav-icon">&#128220;</span> Activity Log
+            </a>
+            <a class="sidebar-item" data-tab="messages-tab">
+                <span class="nav-icon">&#128172;</span> Messages
             </a>
         </div>
         <div class="sidebar-divider"></div>
@@ -891,6 +910,37 @@
                     <button type="button" onclick="clearActivityLog()" style="background: var(--shutdown-bg); padding: 8px 14px;">Clear Log</button>
                 </div>
                 <div id="activity-log-list"><p style="color: #888;">Loading...</p></div>
+            </div>
+        </div>
+
+        <!-- ═══════ Agent Messages Tab ═══════ -->
+        <div id="messages-tab" class="tab-content">
+            <div class="section">
+                <h2>Agent-to-Agent Messages</h2>
+                <div style="display: flex; gap: 10px; align-items: flex-end; margin-bottom: 18px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 120px;">
+                        <label style="font-size: 0.85em; color: var(--secondary-color);">From Agent</label>
+                        <select id="msg-from-agent" style="width: 100%;"></select>
+                    </div>
+                    <div style="font-size: 1.2em; padding-bottom: 8px; color: var(--secondary-color);">&#10132;</div>
+                    <div style="flex: 1; min-width: 120px;">
+                        <label style="font-size: 0.85em; color: var(--secondary-color);">To Agent</label>
+                        <select id="msg-to-agent" style="width: 100%;"></select>
+                    </div>
+                    <div style="flex: 3; min-width: 200px;">
+                        <label style="font-size: 0.85em; color: var(--secondary-color);">Message</label>
+                        <input type="text" id="msg-text-input" placeholder="Type a message..." style="width: 100%;">
+                    </div>
+                    <button type="button" onclick="sendAgentToAgentMessage()" style="padding: 8px 18px; white-space: nowrap;">Send</button>
+                </div>
+                <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap;">
+                    <label style="font-size: 0.85em; color: var(--secondary-color);">Filter by agent:</label>
+                    <select id="msg-filter-agent" onchange="fetchAndDisplayAgentMessages()" style="min-width: 150px;">
+                        <option value="">All agents</option>
+                    </select>
+                    <button type="button" onclick="clearAgentMessages()" style="background: var(--shutdown-bg); padding: 6px 14px; font-size: 0.85em; margin-left: auto;">Clear History</button>
+                </div>
+                <div id="agent-messages-feed" style="max-height: 600px; overflow-y: auto; border: 1px solid var(--section-border); border-radius: 8px; padding: 8px;"><p style="color: #888;">No messages yet.</p></div>
             </div>
         </div>
 
@@ -2632,6 +2682,7 @@
             fetchAndDisplayWorkflows();
             fetchAndDisplayAgentGroups();
             fetchAndDisplayActivityLog();
+            fetchAndDisplayAgentMessages();
 
             // Polling for dynamic data
             setInterval(fetchAndDisplayAgents, 10000);
@@ -2647,6 +2698,7 @@
             setInterval(fetchAndDisplayAgentGroups, 10000);
             setInterval(fetchAndDisplayWorkflowRuns, 5000);
             setInterval(fetchAndDisplayActivityLog, 15000);
+            setInterval(fetchAndDisplayAgentMessages, 5000);
 
             // Attach form submission handlers and other buttons
             document.getElementById('shutdown-hub-button').addEventListener('click', handleShutdownHub);
@@ -2658,6 +2710,9 @@
             document.getElementById('create-webhook-form').addEventListener('submit', handleCreateWebhook);
             document.getElementById('broadcast-form').addEventListener('submit', handleBroadcast);
             document.getElementById('import-settings-form').addEventListener('submit', handleImportSettings);
+            document.getElementById('msg-text-input').addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') { e.preventDefault(); sendAgentToAgentMessage(); }
+            });
 
             // Open the default tab (Dashboard)
             openTab(null, 'dashboard-tab');
@@ -3150,6 +3205,115 @@
                 fetchAndDisplayActivityLog();
             } catch (e) {
                 console.error('Error clearing activity log:', e);
+            }
+        }
+
+        // --- Agent-to-Agent Messages ---
+        let _cachedAgentNames = [];
+
+        function _populateAgentMessageDropdowns(agents) {
+            const names = Object.keys(agents).sort();
+            // Only update if the list changed
+            if (JSON.stringify(names) === JSON.stringify(_cachedAgentNames)) return;
+            _cachedAgentNames = names;
+            ['msg-from-agent', 'msg-to-agent'].forEach(function(id) {
+                const sel = document.getElementById(id);
+                const prev = sel.value;
+                sel.innerHTML = '';
+                names.forEach(function(n) {
+                    const opt = document.createElement('option');
+                    opt.value = n; opt.textContent = n;
+                    sel.appendChild(opt);
+                });
+                if (names.includes(prev)) sel.value = prev;
+            });
+            const filterSel = document.getElementById('msg-filter-agent');
+            const prevFilter = filterSel.value;
+            filterSel.innerHTML = '<option value="">All agents</option>';
+            names.forEach(function(n) {
+                const opt = document.createElement('option');
+                opt.value = n; opt.textContent = n;
+                filterSel.appendChild(opt);
+            });
+            if (prevFilter) filterSel.value = prevFilter;
+        }
+
+        async function fetchAndDisplayAgentMessages() {
+            try {
+                // Also refresh dropdowns from active agents
+                try {
+                    const agentsResp = await fetch('/get_active_agents');
+                    const agentsData = await agentsResp.json();
+                    _populateAgentMessageDropdowns(agentsData);
+                } catch (e) {}
+
+                const filter = (document.getElementById('msg-filter-agent') || {}).value || '';
+                const url = filter ? `/api/agent_messages?agent=${encodeURIComponent(filter)}` : '/api/agent_messages';
+                const resp = await fetch(url);
+                const data = await resp.json();
+                const feed = document.getElementById('agent-messages-feed');
+                if (!data.messages || data.messages.length === 0) {
+                    feed.innerHTML = '<p style="color: #888; text-align: center; padding: 20px;">No agent-to-agent messages yet.</p>';
+                    return;
+                }
+                let html = '';
+                // Show newest first (already sorted from hub)
+                data.messages.forEach(function(m) {
+                    const t = new Date(m.timestamp * 1000);
+                    const timeStr = t.toLocaleString();
+                    const msgText = (m.message || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    html += '<div class="agent-msg-entry">';
+                    html += '<span class="agent-msg-time">' + timeStr + '</span>';
+                    html += '<span class="agent-msg-badge agent-msg-from">' + m.from_agent + '</span>';
+                    html += '<span class="agent-msg-arrow">&#10132;</span>';
+                    html += '<span class="agent-msg-badge agent-msg-to">' + m.to_agent + '</span>';
+                    html += '<span class="agent-msg-text">' + msgText + '</span>';
+                    html += '</div>';
+                });
+                feed.innerHTML = html;
+            } catch (err) {
+                console.error('Error fetching agent messages:', err);
+            }
+        }
+
+        async function sendAgentToAgentMessage() {
+            const fromAgent = document.getElementById('msg-from-agent').value;
+            const toAgent = document.getElementById('msg-to-agent').value;
+            const msgInput = document.getElementById('msg-text-input');
+            const message = msgInput.value.trim();
+            if (!fromAgent || !toAgent || !message) {
+                alert('Please select both agents and type a message.');
+                return;
+            }
+            if (fromAgent === toAgent) {
+                alert('From and To agents must be different.');
+                return;
+            }
+            try {
+                const resp = await fetch('/api/agent_messages/send', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({from_agent: fromAgent, to_agent: toAgent, message: message})
+                });
+                const data = await resp.json();
+                if (data.status === 'success') {
+                    msgInput.value = '';
+                    fetchAndDisplayAgentMessages();
+                } else {
+                    alert(data.message || 'Error sending message.');
+                }
+            } catch (e) {
+                console.error('Error sending agent message:', e);
+            }
+        }
+
+        async function clearAgentMessages() {
+            if (!confirm('Clear all agent-to-agent message history?')) return;
+            try {
+                await fetch('/api/agent_messages/clear', {method: 'POST'});
+                fetchAndDisplayAgentMessages();
+            } catch (e) {
+                console.error('Error clearing agent messages:', e);
             }
         }
 
