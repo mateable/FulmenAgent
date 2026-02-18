@@ -128,6 +128,7 @@ def setup_page():
             _save_auth(_auth_config)
             session["authenticated"] = True
             logger.info(f"[Auth] Admin account created: {username}")
+            _log_activity("admin_setup", f"Admin account '{username}' created")
             return redirect(url_for("dashboard"))
     return render_template("setup.html", error=error)
 
@@ -142,7 +143,9 @@ def login_page():
         if (username == _auth_config.get("username", "") and
                 _hash_password(password) == _auth_config.get("password_hash", "")):
             session["authenticated"] = True
+            _log_activity("login_success", f"User '{username}' logged in")
             return redirect(url_for("dashboard"))
+        _log_activity("login_failed", f"Failed login attempt for user '{username}'")
         error = "Invalid username or password."
     return render_template("login.html", error=error)
 
@@ -178,6 +181,7 @@ def api_set_password():
     _auth_config["enabled"] = bool(enabled)
     _save_auth(_auth_config)
     session["authenticated"] = True
+    _log_activity("auth_settings_changed", f"Auth settings updated (enabled={_auth_config['enabled']})")
     return jsonify({"status": "success", "enabled": _auth_config["enabled"], "message": "Authentication settings updated."}), 200
 
 hub_memory = {
@@ -206,7 +210,8 @@ hub_memory = {
     "agent_templates": [],  # Persisted to agent_templates.json
     "workflows": [],        # Persisted to workflows.json
     "workflow_runs": [],    # Persisted to workflow_runs.json
-    "agent_groups": {}      # {"group_name": {"name", "agents": [], "created_at"}} — Persisted to agent_groups.json
+    "agent_groups": {},      # {"group_name": {"name", "agents": [], "created_at"}} — Persisted to agent_groups.json
+    "activity_log": []       # [{"id", "event", "details", "timestamp"}] — capped at 500, persisted
 }
 
 launched_agent_processes = {}
@@ -426,6 +431,43 @@ def _add_notification(ntype, message):
     if len(hub_memory["notifications"]) > MAX_NOTIFICATIONS:
         hub_memory["notifications"] = hub_memory["notifications"][:MAX_NOTIFICATIONS]
     _save_notifications()
+    # Also record in the activity log
+    _log_activity(ntype, message)
+
+# ─── Activity Log System ───
+
+MAX_ACTIVITY_LOG = 500
+ACTIVITY_LOG_FILE = os.path.join(os.path.dirname(__file__), "activity_log.json")
+
+def _save_activity_log():
+    try:
+        with open(ACTIVITY_LOG_FILE, "w") as f:
+            json.dump(hub_memory["activity_log"], f, indent=2)
+    except Exception as e:
+        logger.error(f"[ActivityLog] Error saving: {e}")
+
+def _load_activity_log():
+    if os.path.exists(ACTIVITY_LOG_FILE):
+        try:
+            with open(ACTIVITY_LOG_FILE, "r") as f:
+                hub_memory["activity_log"] = json.load(f)
+            logger.info(f"[ActivityLog] Loaded {len(hub_memory['activity_log'])} entries from disk.")
+        except Exception as e:
+            logger.error(f"[ActivityLog] Error loading: {e}")
+
+_load_activity_log()
+
+def _log_activity(event, details=""):
+    """Add an entry to the activity log (capped at MAX_ACTIVITY_LOG, persisted)."""
+    hub_memory["activity_log"].insert(0, {
+        "id": str(uuid.uuid4())[:8],
+        "event": event,
+        "details": details,
+        "timestamp": time.time()
+    })
+    if len(hub_memory["activity_log"]) > MAX_ACTIVITY_LOG:
+        hub_memory["activity_log"] = hub_memory["activity_log"][:MAX_ACTIVITY_LOG]
+    _save_activity_log()
 
 # ─── Webhook System ───
 
@@ -1131,7 +1173,9 @@ def api_get_config():
         "MOONSHOT_API_KEY", "MOONSHOT_MODEL", "HUGGINGFACE_API_KEY", "HUGGINGFACE_MODEL",
         "DISCORDAGENT_DISCORD_TOKEN",
         "DISCORDAGENT_DISCORD_CHANNEL_ID", "TELEGRAMAGENT_TELEGRAM_TOKEN",
-        "TELEGRAMAGENT_TELEGRAM_ALLOWED_CHATS", "LINEAGENT_LINE_CHANNEL_SECRET",
+        "TELEGRAMAGENT_TELEGRAM_ALLOWED_CHATS",
+        "SLACKAGENT_SLACK_BOT_TOKEN", "SLACKAGENT_SLACK_APP_TOKEN", "SLACKAGENT_SLACK_CHANNEL_ID",
+        "LINEAGENT_LINE_CHANNEL_SECRET",
         "LINEAGENT_LINE_CHANNEL_ACCESS_TOKEN", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
         "TWILIO_PHONE_NUMBER", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_ACCESS_TOKEN",
         "X_CONSUMER_KEY", "X_CONSUMER_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET",
@@ -1148,7 +1192,8 @@ def api_get_config():
     sensitive_keys = [
         "OPENROUTER_API_KEY", "MOONSHOT_API_KEY", "HUGGINGFACE_API_KEY",
         "DISCORDAGENT_DISCORD_TOKEN",
-        "TELEGRAMAGENT_TELEGRAM_TOKEN", "LINEAGENT_LINE_CHANNEL_SECRET",
+        "TELEGRAMAGENT_TELEGRAM_TOKEN", "SLACKAGENT_SLACK_BOT_TOKEN", "SLACKAGENT_SLACK_APP_TOKEN",
+        "LINEAGENT_LINE_CHANNEL_SECRET",
         "LINEAGENT_LINE_CHANNEL_ACCESS_TOKEN", "TWILIO_AUTH_TOKEN",
         "WHATSAPP_ACCESS_TOKEN", "X_CONSUMER_KEY", "X_CONSUMER_SECRET",
         "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET", "VOYAGE_AI_API_KEY",
@@ -1191,7 +1236,8 @@ def api_set_config():
     sensitive_keys = [
         "OPENROUTER_API_KEY", "MOONSHOT_API_KEY", "HUGGINGFACE_API_KEY",
         "DISCORDAGENT_DISCORD_TOKEN",
-        "TELEGRAMAGENT_TELEGRAM_TOKEN", "LINEAGENT_LINE_CHANNEL_SECRET",
+        "TELEGRAMAGENT_TELEGRAM_TOKEN", "SLACKAGENT_SLACK_BOT_TOKEN", "SLACKAGENT_SLACK_APP_TOKEN",
+        "LINEAGENT_LINE_CHANNEL_SECRET",
         "LINEAGENT_LINE_CHANNEL_ACCESS_TOKEN", "TWILIO_AUTH_TOKEN",
         "WHATSAPP_ACCESS_TOKEN", "X_CONSUMER_KEY", "X_CONSUMER_SECRET",
         "X_ACCESS_TOKEN", "X_ACCESS_TOKEN_SECRET", "VOYAGE_AI_API_KEY",
@@ -1220,6 +1266,7 @@ def api_set_config():
     load_dotenv(DOTENV_PATH, override=True)
 
     logger.info("Configuration updated via dashboard API.")
+    _log_activity("settings_updated", "Environment configuration updated via dashboard")
     return jsonify({"status": "success", "message": "Configuration updated."}), 200
 
 # NEW: API endpoint for auto-install dependencies preference
@@ -2348,7 +2395,7 @@ def api_export_settings():
     files_to_export = [
         "webhooks.json", "agent_templates.json", "workflows.json",
         "workflow_runs.json", "scheduled_tasks.json", "notifications.json",
-        "agent_groups.json"
+        "agent_groups.json", "activity_log.json"
     ]
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for fname in files_to_export:
@@ -2372,7 +2419,7 @@ def api_import_settings():
     allowed_files = {
         "webhooks.json", "agent_templates.json", "workflows.json",
         "workflow_runs.json", "scheduled_tasks.json", "notifications.json",
-        "agent_groups.json"
+        "agent_groups.json", "activity_log.json"
     }
     imported = []
     try:
@@ -2389,7 +2436,9 @@ def api_import_settings():
         _load_scheduled_tasks()
         _load_notifications()
         _load_agent_groups()
+        _load_activity_log()
         logger.info(f"[Import] Imported settings: {imported}")
+        _log_activity("settings_imported", f"Imported {len(imported)} file(s): {', '.join(imported)}")
         return jsonify({"status": "success", "message": f"Imported {len(imported)} file(s): {', '.join(imported)}"}), 200
     except Exception as e:
         logger.error(f"[Import] Error importing settings: {e}")
@@ -2448,6 +2497,24 @@ def api_clone_agent(agent_name):
         return jsonify({"status": "error", "message": f"Clone failed: {e}"}), 500
 
 
+# ─── Activity Log API ───
+
+@app.route("/api/activity_log", methods=["GET"])
+def api_get_activity_log():
+    limit = request.args.get("limit", 100, type=int)
+    event_filter = request.args.get("event", "")
+    entries = hub_memory["activity_log"]
+    if event_filter:
+        entries = [e for e in entries if event_filter.lower() in e["event"].lower()]
+    return jsonify({"status": "success", "entries": entries[:limit]}), 200
+
+@app.route("/api/activity_log/clear", methods=["POST"])
+def api_clear_activity_log():
+    hub_memory["activity_log"] = []
+    _save_activity_log()
+    _log_activity("log_cleared", "Activity log cleared by admin")
+    return jsonify({"status": "success", "message": "Activity log cleared."}), 200
+
 # ─── Auto-Restart API ───
 
 @app.route("/api/auto_restart", methods=["GET"])
@@ -2460,6 +2527,7 @@ def api_toggle_auto_restart():
     data = request.json or {}
     auto_restart_enabled = bool(data.get("enabled", not auto_restart_enabled))
     logger.info(f"[AutoRestart] Auto-restart {'enabled' if auto_restart_enabled else 'disabled'}")
+    _log_activity("auto_restart_toggled", f"Auto-restart {'enabled' if auto_restart_enabled else 'disabled'}")
     return jsonify({"status": "success", "enabled": auto_restart_enabled}), 200
 
 

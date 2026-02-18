@@ -178,6 +178,47 @@
             border-top: 1px solid var(--section-border);
         }
 
+        /* ─── Hamburger / Mobile ─── */
+        .hamburger-btn { display: none; font-size: 1.4em; }
+        .sidebar-backdrop {
+            display: none; position: fixed; top: 56px; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5); z-index: 998;
+        }
+        .sidebar-backdrop.active { display: block; }
+
+        @media (max-width: 768px) {
+            .hamburger-btn { display: inline-flex; }
+            .sidebar {
+                transform: translateX(-100%);
+                transition: transform 0.25s ease;
+            }
+            .sidebar.open { transform: translateX(0); }
+            .main-content { margin-left: 0; }
+            .app-footer { margin-left: 0; }
+        }
+
+        /* ─── Activity Log Styles ─── */
+        .activity-entry {
+            display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px;
+            border-bottom: 1px solid var(--section-border); font-size: 0.9em;
+        }
+        .activity-entry:last-child { border-bottom: none; }
+        .activity-event-badge {
+            display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75em;
+            font-weight: 600; white-space: nowrap; min-width: 80px; text-align: center;
+            background: var(--primary-color); color: white;
+        }
+        .activity-event-badge.login_success, .activity-event-badge.admin_setup { background: #42b72a; }
+        .activity-event-badge.login_failed { background: #e74c3c; }
+        .activity-event-badge.agent_launched, .activity-event-badge.agent_restarted { background: #1877f2; }
+        .activity-event-badge.agent_shutdown { background: #fa3e3e; }
+        .activity-event-badge.webhook_triggered { background: #e67e22; }
+        .activity-event-badge.settings_updated, .activity-event-badge.auth_settings_changed { background: #8e44ad; }
+        .activity-event-badge.workflow_started, .activity-event-badge.workflow_completed { background: #27ae60; }
+        .activity-event-badge.workflow_failed { background: #c0392b; }
+        .activity-time { color: var(--secondary-color); font-size: 0.8em; white-space: nowrap; min-width: 130px; }
+        .activity-details { flex: 1; word-break: break-word; }
+
         /* ─── Content Styles ─── */
         h1, h2 { color: var(--primary-color); }
         h3 { color: var(--secondary-color); border-bottom: 1px solid var(--section-border); padding-bottom: 10px; margin-top: 20px; }
@@ -219,6 +260,7 @@
     <!-- ─── Top Header ─── -->
     <header class="top-header">
         <div class="header-left">
+            <button id="hamburger-btn" class="icon-btn hamburger-btn" onclick="toggleSidebar()" title="Toggle menu">&#9776;</button>
             <span class="app-logo"><span class="app-logo-accent">FulMen</span> Agent Network</span>
             <span id="version-badge" title="Click to check for updates">v...</span>
         </div>
@@ -267,6 +309,9 @@
             <a class="sidebar-item" data-tab="workflows-tab">
                 <span class="nav-icon">&#128260;</span> Workflows
             </a>
+            <a class="sidebar-item" data-tab="activity-tab">
+                <span class="nav-icon">&#128220;</span> Activity Log
+            </a>
         </div>
         <div class="sidebar-divider"></div>
         <div class="sidebar-bottom">
@@ -274,6 +319,7 @@
             <button id="reset-hub-button" class="sidebar-action-btn sidebar-warning-btn">&#8635; Reset Hub</button>
         </div>
     </nav>
+    <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="toggleSidebar()"></div>
 
     <!-- ─── Main Content ─── -->
     <main class="main-content">
@@ -290,7 +336,7 @@
                 </div>
                 <form id="add-agent-form" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                     <div><label for="agent-name">Agent Name:</label><input type="text" id="agent-name" name="agent_name" required></div>
-                    <div><label for="connector-type">Connector Type:</label><select id="connector-type" name="connector_type"><option value="none">None</option><option value="discord">Discord</option><option value="telegram">Telegram</option><option value="line">LINE</option><option value="whatsapp">WhatsApp</option><option value="x">X (Twitter)</option><option value="voice">Voice</option></select></div>
+                    <div><label for="connector-type">Connector Type:</label><select id="connector-type" name="connector_type"><option value="none">None</option><option value="discord">Discord</option><option value="telegram">Telegram</option><option value="slack">Slack</option><option value="line">LINE</option><option value="whatsapp">WhatsApp</option><option value="x">X (Twitter)</option><option value="voice">Voice</option></select></div>
                     <div>
                         <div class="tooltip-container">
                             <label for="proactive-loops">Proactive Loop:<span class="tooltip-icon">?</span></label>
@@ -433,12 +479,55 @@
                         </div>
                         <span id="hf-model-count" style="font-size: 0.85em; color: #888; margin-left: 10px;"></span>
                     </div>
-                    <h3>Discord Connector (Generic)</h3>
+                    <h3>Discord Connector</h3>
+                    <details style="margin-bottom:10px; padding:10px; border:1px solid #444; border-radius:6px; background:#16213e;">
+                        <summary style="cursor:pointer; color:#7c83ff; font-weight:600;">Setup Guide: How to get a Discord Bot Token</summary>
+                        <ol style="margin:10px 0 0 20px; color:#ccc; font-size:0.9em; line-height:1.8;">
+                            <li>Go to <strong>discord.com/developers/applications</strong> and log in</li>
+                            <li>Click <strong>"New Application"</strong>, give it a name, click Create</li>
+                            <li>Go to <strong>Bot</strong> tab on the left, click <strong>"Add Bot"</strong></li>
+                            <li>Under Token, click <strong>"Reset Token"</strong> and copy it &mdash; paste it below</li>
+                            <li>Scroll down, enable <strong>"Message Content Intent"</strong> under Privileged Gateway Intents</li>
+                            <li>Go to <strong>OAuth2 &rarr; URL Generator</strong>, select scopes: <strong>bot</strong>, permissions: <strong>Send Messages, Read Message History</strong></li>
+                            <li>Copy the generated URL, open it in your browser, and invite the bot to your server</li>
+                            <li>Right-click the channel you want &rarr; <strong>Copy Channel ID</strong> (enable Developer Mode in Discord settings if needed)</li>
+                        </ol>
+                    </details>
                     <div><label for="discord-token">Discord Token:</label><input type="password" id="discord-token" name="DISCORDAGENT_DISCORD_TOKEN"></div>
                     <div><label for="discord-channel-id">Discord Channel ID:</label><input type="text" id="discord-channel-id" name="DISCORDAGENT_DISCORD_CHANNEL_ID"></div>
-                    <h3>Telegram Connector (Generic)</h3>
+
+                    <h3>Telegram Connector</h3>
+                    <details style="margin-bottom:10px; padding:10px; border:1px solid #444; border-radius:6px; background:#16213e;">
+                        <summary style="cursor:pointer; color:#7c83ff; font-weight:600;">Setup Guide: How to get a Telegram Bot Token</summary>
+                        <ol style="margin:10px 0 0 20px; color:#ccc; font-size:0.9em; line-height:1.8;">
+                            <li>Open Telegram and search for <strong>@BotFather</strong></li>
+                            <li>Send <strong>/newbot</strong> and follow the prompts (choose a name and username)</li>
+                            <li>BotFather will give you a <strong>token</strong> &mdash; copy and paste it below</li>
+                            <li>To find your <strong>Chat ID</strong>: add the bot to a group or send it a message, then visit <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> and look for <code>"chat":{"id": ...}</code></li>
+                            <li>Add the chat ID(s) below to restrict which chats the bot responds in (leave empty to allow all)</li>
+                        </ol>
+                    </details>
                     <div><label for="telegram-token">Telegram Token:</label><input type="password" id="telegram-token" name="TELEGRAMAGENT_TELEGRAM_TOKEN"></div>
                     <div><label for="telegram-allowed-chats">Telegram Allowed Chat IDs (comma-separated):</label><input type="text" id="telegram-allowed-chats" name="TELEGRAMAGENT_TELEGRAM_ALLOWED_CHATS"></div>
+
+                    <h3>Slack Connector</h3>
+                    <details style="margin-bottom:10px; padding:10px; border:1px solid #444; border-radius:6px; background:#16213e;">
+                        <summary style="cursor:pointer; color:#7c83ff; font-weight:600;">Setup Guide: How to get Slack Bot & App Tokens</summary>
+                        <ol style="margin:10px 0 0 20px; color:#ccc; font-size:0.9em; line-height:1.8;">
+                            <li>Go to <strong>api.slack.com/apps</strong> and click <strong>"Create New App"</strong> &rarr; "From scratch"</li>
+                            <li>Give it a name, pick your workspace, click Create</li>
+                            <li>Go to <strong>Socket Mode</strong> on the left, enable it, give the token a name &mdash; this generates your <strong>App-Level Token (xapp-...)</strong></li>
+                            <li>Go to <strong>Event Subscriptions</strong>, enable it, under "Subscribe to bot events" add: <strong>message.channels</strong>, <strong>message.groups</strong>, <strong>message.im</strong></li>
+                            <li>Go to <strong>OAuth &amp; Permissions</strong>, add scopes: <strong>chat:write</strong>, <strong>files:read</strong>, <strong>files:write</strong>, <strong>channels:history</strong>, <strong>groups:history</strong>, <strong>im:history</strong></li>
+                            <li>Click <strong>"Install to Workspace"</strong> and authorize</li>
+                            <li>Copy the <strong>Bot User OAuth Token (xoxb-...)</strong> &mdash; paste below</li>
+                            <li>Invite the bot to a channel: type <strong>/invite @YourBotName</strong> in the channel</li>
+                            <li>Optional: right-click the channel &rarr; "View channel details" &rarr; scroll to the bottom to find the <strong>Channel ID</strong></li>
+                        </ol>
+                    </details>
+                    <div><label for="slack-bot-token">Slack Bot Token (xoxb-...):</label><input type="password" id="slack-bot-token" name="SLACKAGENT_SLACK_BOT_TOKEN"></div>
+                    <div><label for="slack-app-token">Slack App-Level Token (xapp-...):</label><input type="password" id="slack-app-token" name="SLACKAGENT_SLACK_APP_TOKEN"></div>
+                    <div><label for="slack-channel-id">Slack Channel ID (optional):</label><input type="text" id="slack-channel-id" name="SLACKAGENT_SLACK_CHANNEL_ID"></div>
                     <h3>LINE Connector (Generic)</h3>
                     <div><label for="line-channel-secret">LINE Channel Secret:</label><input type="password" id="line-channel-secret" name="LINEAGENT_LINE_CHANNEL_SECRET"></div>
                     <div><label for="line-channel-access-token">LINE Channel Access Token:</label><input type="password" id="line-channel-access-token" name="LINEAGENT_LINE_CHANNEL_ACCESS_TOKEN"></div>
@@ -790,6 +879,18 @@
                 <!-- Workflow Runs -->
                 <h3 style="margin-top: 25px;">Workflow Runs</h3>
                 <div id="workflow-runs-list"><p style="color: #888;">Loading...</p></div>
+            </div>
+        </div>
+
+        <!-- ═══════ Activity Log Tab ═══════ -->
+        <div id="activity-tab" class="tab-content">
+            <div class="section">
+                <h2>Activity Log</h2>
+                <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 15px; flex-wrap: wrap;">
+                    <input type="text" id="activity-filter" placeholder="Filter by event type..." style="max-width: 300px;" oninput="fetchAndDisplayActivityLog()">
+                    <button type="button" onclick="clearActivityLog()" style="background: var(--shutdown-bg); padding: 8px 14px;">Clear Log</button>
+                </div>
+                <div id="activity-log-list"><p style="color: #888;">Loading...</p></div>
             </div>
         </div>
 
@@ -1642,6 +1743,9 @@
                 document.getElementById('discord-channel-id').value = config.DISCORDAGENT_DISCORD_CHANNEL_ID || '';
                 document.getElementById('telegram-token').value = config.TELEGRAMAGENT_TELEGRAM_TOKEN || '';
                 document.getElementById('telegram-allowed-chats').value = config.TELEGRAMAGENT_TELEGRAM_ALLOWED_CHATS || '';
+                document.getElementById('slack-bot-token').value = config.SLACKAGENT_SLACK_BOT_TOKEN || '';
+                document.getElementById('slack-app-token').value = config.SLACKAGENT_SLACK_APP_TOKEN || '';
+                document.getElementById('slack-channel-id').value = config.SLACKAGENT_SLACK_CHANNEL_ID || '';
                 document.getElementById('line-channel-secret').value = config.LINEAGENT_LINE_CHANNEL_SECRET || '';
                 document.getElementById('line-channel-access-token').value = config.LINEAGENT_LINE_CHANNEL_ACCESS_TOKEN || '';
                 document.getElementById('email-api-service').value = config.EMAIL_API_SERVICE || '';
@@ -2493,6 +2597,11 @@
                 item.addEventListener('click', function(e) {
                     e.preventDefault();
                     openTab(e, this.dataset.tab);
+                    // Close sidebar on mobile after clicking a menu item
+                    if (window.innerWidth <= 768) {
+                        document.querySelector('.sidebar').classList.remove('open');
+                        document.getElementById('sidebar-backdrop').classList.remove('active');
+                    }
                 });
             });
 
@@ -2522,6 +2631,7 @@
             fetchAgentTemplates();
             fetchAndDisplayWorkflows();
             fetchAndDisplayAgentGroups();
+            fetchAndDisplayActivityLog();
 
             // Polling for dynamic data
             setInterval(fetchAndDisplayAgents, 10000);
@@ -2536,6 +2646,7 @@
             setInterval(fetchAndDisplayWebhooks, 10000);
             setInterval(fetchAndDisplayAgentGroups, 10000);
             setInterval(fetchAndDisplayWorkflowRuns, 5000);
+            setInterval(fetchAndDisplayActivityLog, 15000);
 
             // Attach form submission handlers and other buttons
             document.getElementById('shutdown-hub-button').addEventListener('click', handleShutdownHub);
@@ -3002,6 +3113,52 @@
             } catch (e) {
                 console.error('Error cancelling workflow run:', e);
             }
+        }
+
+        // --- Activity Log ---
+        async function fetchAndDisplayActivityLog() {
+            try {
+                const filter = (document.getElementById('activity-filter') || {}).value || '';
+                const url = filter ? `/api/activity_log?event=${encodeURIComponent(filter)}` : '/api/activity_log';
+                const resp = await fetch(url);
+                const data = await resp.json();
+                const container = document.getElementById('activity-log-list');
+                if (!data.entries || data.entries.length === 0) {
+                    container.innerHTML = '<p style="color: #888;">No activity recorded yet.</p>';
+                    return;
+                }
+                let html = '';
+                data.entries.forEach(function(e) {
+                    const t = new Date(e.timestamp * 1000);
+                    const timeStr = t.toLocaleString();
+                    html += '<div class="activity-entry">';
+                    html += '<span class="activity-time">' + timeStr + '</span>';
+                    html += '<span class="activity-event-badge ' + e.event + '">' + e.event.replace(/_/g, ' ') + '</span>';
+                    html += '<span class="activity-details">' + (e.details || '—') + '</span>';
+                    html += '</div>';
+                });
+                container.innerHTML = html;
+            } catch (err) {
+                console.error('Error fetching activity log:', err);
+            }
+        }
+
+        async function clearActivityLog() {
+            if (!confirm('Clear the entire activity log?')) return;
+            try {
+                await fetch('/api/activity_log/clear', {method: 'POST'});
+                fetchAndDisplayActivityLog();
+            } catch (e) {
+                console.error('Error clearing activity log:', e);
+            }
+        }
+
+        // --- Mobile Sidebar Toggle ---
+        function toggleSidebar() {
+            const sidebar = document.querySelector('.sidebar');
+            const backdrop = document.getElementById('sidebar-backdrop');
+            sidebar.classList.toggle('open');
+            backdrop.classList.toggle('active');
         }
 
     </script>

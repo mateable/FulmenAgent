@@ -201,7 +201,7 @@ def main():
         all_agents.append(agent) # Add agent to the list of all agents
 
         # Determine connector type
-        if i < len(connector_types_arg) and connector_types_arg[i] in ["discord", "telegram", "line", "voice", "whatsapp", "x", "none"]:
+        if i < len(connector_types_arg) and connector_types_arg[i] in ["discord", "telegram", "slack", "line", "voice", "whatsapp", "x", "none"]:
             connector_type_choice = connector_types_arg[i]
             console.print(f"  -> Using connector type '{connector_type_choice}' for {agent_name} from arguments.")
         else:
@@ -209,7 +209,7 @@ def main():
             if sys.stdin.isatty():
                 connector_type_choice = Prompt.ask(
                     f"[bold cyan]Choose connector type for {agent_name}[/bold cyan]\n",
-                    choices=["discord", "telegram", "line", "voice", "none"],
+                    choices=["discord", "telegram", "slack", "line", "voice", "none"],
                     default="none"
                 ).lower()
             else:
@@ -260,7 +260,29 @@ def main():
                             console.print("[bold yellow]Telegram allowed chats not found in .env. The bot will respond to all messages.[/bold yellow]")
 
                         connector = ConnectorClass(agent=agent, logger=logger, token=token, allowed_chats=allowed_chats)
-                    
+
+                    elif connector_type_choice == "slack":
+                        bot_token = os.environ.get(f"{agent_name.upper()}_SLACK_BOT_TOKEN")
+                        app_token = os.environ.get(f"{agent_name.upper()}_SLACK_APP_TOKEN")
+                        slack_channel_id = os.environ.get(f"{agent_name.upper()}_SLACK_CHANNEL_ID", "")
+
+                        if not bot_token:
+                            console.print("[bold yellow]Slack bot token not found in .env.[/bold yellow]")
+                            if sys.stdin.isatty():
+                                bot_token = Prompt.ask("[bold cyan]Enter Slack Bot Token (xoxb-...)[/bold cyan]", password=True)
+                            else:
+                                logger.error(f"Slack bot token not provided for {agent_name} in non-interactive mode. Skipping Slack connector.")
+                                continue
+                        if not app_token:
+                            console.print("[bold yellow]Slack app-level token not found in .env.[/bold yellow]")
+                            if sys.stdin.isatty():
+                                app_token = Prompt.ask("[bold cyan]Enter Slack App-Level Token (xapp-...)[/bold cyan]", password=True)
+                            else:
+                                logger.error(f"Slack app token not provided for {agent_name} in non-interactive mode. Skipping Slack connector.")
+                                continue
+
+                        connector = ConnectorClass(agent=agent, logger=logger, bot_token=bot_token, app_token=app_token, channel_id=slack_channel_id or None)
+
                     elif connector_type_choice == "line":
                         channel_access_token = os.environ.get(f"{agent_name.upper()}_LINE_CHANNEL_ACCESS_TOKEN")
                         channel_secret = os.environ.get(f"{agent_name.upper()}_LINE_CHANNEL_SECRET")
