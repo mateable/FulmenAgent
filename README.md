@@ -1,3 +1,20 @@
+<p align="center">
+  <a href="https://mateable.com" target="_blank">
+    <img src="https://mateable.com/images/10.png" width="400" alt="Mateable Media Logo">
+  </a>
+</p>
+
+<p align="center">
+  <div align="center">
+
+[![Platform](https://img.shields.io/badge/Mateable-Fulmen_Agent-blueviolet.svg)](https://mateable.com)
+[![Backend](https://img.shields.io/badge/PHP-Backend-blueviolet.svg)](https://www.php.net)
+[![Frontend](https://img.shields.io/badge/Javascript-Frontend-blueviolet.svg)](https://developer.mozilla.org/en-US/docs/Web/JavaScript)
+
+  </div>
+</p>
+
+---
 # FulMen Agent Network
 
 This project implements a multi-agent network designed for autonomous task execution, learning, and collaboration. It features a central Hub for agent registration and experience sharing, and individual Agents capable of planning, executing tasks using various tools, and reflecting on their experiences.
